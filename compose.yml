@@ -23,7 +23,7 @@ services:
       N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
       N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT: "15"
   searxng:
-    image: ghcr.io/searxng/searxng:latest
+    image: ghcr.io/searxng/searxng@sha256:5ec43b0d25e5542c4d99e1d3eaeca0f69bda1714211b56b703caa76ac7f9fe38
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET}
     volumes:
