@@ -1,0 +1,65 @@
+{
+  "id": "twMatchUniverse",
+  "name": "TickerWatch • Match Universe",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "02212301-50a7-59c8-9b22-7b5756c4627c",
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -176,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function priceForecast(value){const text=String(value||'');return /\\b(?:stock|shares?|price|valuation)\\b.{0,60}\\b(?:could|may|expected|forecast|move|rise|fall|gain|drop|up|down|swing|surge|plunge)\\b.{0,40}\\d+(?:\\.\\d+)?\\s*[%％]/i.test(text)||/\\b(?:implied|expected|forecast|potential)\\b.{0,30}\\b(?:move|swing|return)\\b.{0,25}\\d+(?:\\.\\d+)?\\s*[%％]/i.test(text);}\nconst c=$input.first().json;\n// Reviewed exposure overrides are used only when the Universe row has no tags.\nfor(const s of c.universe){const x=(c.cfg.reviewed_exposures||[]).find(x=>x.stock_id===s.stock_id);if(x&&!String(s.exposure_tags||'').trim())Object.assign(s,{exposure_tags:x.exposure_tags,exposure_evidence_url:x.exposure_evidence_url,reviewed_on:x.reviewed_on});}\nconst themes=[\n ['fuel_costs',/\\b(oil|crude|jet fuel|diesel|opec)\\b/i],['oil_revenue',/\\b(oil|crude|opec)\\b/i],\n ['us_demand',/\\b(us|u\\.s\\.|united states|american)\\b.{0,60}\\b(demand|consumer|recession|growth|tariff)/i],\n ['euro_funding',/\\b(ecb|european central bank|eurozone|euro area)\\b.{0,90}\\b(rate|inflation|credit|funding)/i],\n ['usd_funding',/\\b(federal reserve|fed|us interest rates)\\b/i],\n ['china_demand',/\\b(china|chinese)\\b.{0,70}\\b(demand|growth|stimulus|consumer|tariff)/i],\n ['semiconductors',/\\b(semiconductor|chips|chip export|chipmaking)\\b/i],\n ['trade_tariffs',/\\b(tariff|trade war|export restriction|export ban)\\b/i]\n];\nfunction norm(s){return String(s||'').toLowerCase().normalize('NFKD').replace(/[\\u0300-\\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}\nfor(const e of c.queue||[]){\n const title=String(e.title||'');\n if(priceForecast(title)){e.status='filtered';e.filter_reason='Numerical stock-price forecast';c.state.Events[e.event_id]=e;c.dirty.push({table:'Events',key:e.event_id,value:e});continue;}\n if(/\\b(prediction|stocks? to (buy|own)|undervalued stocks?|should you (buy|sell|be worried)|millionaire|could (soar|skyrocket)|stock is going to soar|best stocks to)\\b/i.test(title)){e.status='filtered';e.filter_reason='Investment opinion / stock-picking headline';c.state.Events[e.event_id]=e;c.dirty.push({table:'Events',key:e.event_id,value:e});continue;}\n const hay=' '+norm(e.title+' '+e.snippet)+' ';const candidates=[];\n for(const s of c.universe){\n  const aliases=[s.company,...String(s.aliases||'').split('|')].map(norm).filter(a=>a.length>=4);\n  let alias=aliases.find(a=>hay.includes(' '+a+' '));\n  // A subsidiary-only mention does not prove a parent-company development.\n  if(s.issuer_id==='tencent'&&/tencent music/i.test(e.title)&&!/tencent holdings|tencent cloud|0700/.test(String(e.title).toLowerCase()))alias=null;\n  if(alias)candidates.push({stock_id:s.stock_id,issuer_id:s.issuer_id,company:s.company,match_type:'direct',matched:alias,evidence_url:e.url});\n  else if(/^https?:\\/\\//.test(s.exposure_evidence_url||'')&&/^\\d{4}-\\d{2}-\\d{2}$/.test(s.reviewed_on||'')){\n   const tags=String(s.exposure_tags||'').split('|');const hits=themes.filter(([tag,re])=>tags.includes(tag)&&re.test(e.title+' '+e.snippet)).map(x=>x[0]);\n   if(hits.length)candidates.push({stock_id:s.stock_id,issuer_id:s.issuer_id,company:s.company,match_type:'indirect',matched:hits.join('|'),evidence_url:s.exposure_evidence_url,reviewed_on:s.reviewed_on});\n  }\n }\n e.candidates=candidates;e.universe_rows_considered=c.universe.length;e.universe_version=c.cfg.universe_version;\n e.status=candidates.length?'pending':'filtered';c.state.Events[e.event_id]=e;c.dirty.push({table:'Events',key:e.event_id,value:e});\n}\nreturn [{json:c}];\n  "
+      },
+      "id": "cd210b4f-818c-5b54-a954-6c737c6fe7fa",
+      "name": "Match names and evidenced exposures",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Deterministic matching\nMatches whole company aliases, never short ticker substrings. Indirect links require exposure tags AND an evidence URL and review date in Universe. Every enabled universe row is considered. No inference from listing country.",
+        "height": 240,
+        "width": 680
+      },
+      "id": "886b6447-e01a-51b4-96c2-2f8423e3502c",
+      "name": "Read me 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        -112
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Match names and evidenced exposures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

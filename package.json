@@ -1,0 +1,14 @@
+{
+  "name": "tickerwatch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Evidence-linked Telegram research workflow for a trading challenge team",
+  "scripts": {
+    "test": "node --test tests/core.test.cjs",
+    "check": "node scripts/verify-project.cjs",
+    "extract": "node scripts/extract-code.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

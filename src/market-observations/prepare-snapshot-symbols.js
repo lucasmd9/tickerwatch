@@ -1,0 +1,1 @@
+return $input.first().json.backdrop_plans.map(plan=>({json:plan}));

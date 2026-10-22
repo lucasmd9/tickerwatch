@@ -1,0 +1,6 @@
+services:
+  n8n:
+    environment:
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_PROXY_HOPS: "1"
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: "1"

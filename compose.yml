@@ -1,0 +1,32 @@
+name: tickerwatch
+services:
+  n8n:
+    image: docker.io/n8nio/n8n:${N8N_VERSION}
+    ports:
+      - "127.0.0.1:5678:5678"
+    env_file: .env
+    environment:
+      TZ: Europe/Paris
+      GENERIC_TIMEZONE: Europe/Paris
+      N8N_PROXY_HOPS: "1"
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: "1"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  runners:
+    image: ghcr.io/n8n-io/runners:${N8N_VERSION}
+    depends_on:
+      - n8n
+    environment:
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
+      N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT: "15"
+  searxng:
+    image: ghcr.io/searxng/searxng:latest
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET}
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+volumes:
+  n8n-data:

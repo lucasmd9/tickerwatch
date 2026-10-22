@@ -1,0 +1,1 @@
+return $input.first().json.calendar_plans.filter(p=>p.kind==='yahoo').map(plan=>({json:{...plan,payload:{jsonrpc:'2.0',id:7,method:'tools/call',params:{name:'get_company_info',arguments:{ticker:plan.stock.yahoo_symbol,response_format:'json'}}}}}));

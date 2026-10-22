@@ -1,0 +1,334 @@
+{
+  "id": "twCalendarDiscovery",
+  "name": "TickerWatch • Calendar Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c2a9944c-2837-5869-a01c-7c889b14ebd7",
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -176,
+        192
+      ]
+    },
+    {
+      "id": "11013052-7106-50b4-9d7e-467f045b86a3",
+      "name": "Plan calendar checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Dedicated calendar discovery. Provider dates never become issuer-confirmed facts.\nconst CC_PAGES={\n 'AAPL:NASDAQ':'https://investor.apple.com/investor-relations/',\n 'MSFT:NASDAQ':'https://www.microsoft.com/en-us/Investor/events/default.aspx',\n 'NVDA:NASDAQ':'https://investor.nvidia.com/events-and-presentations/events-and-presentations/default.aspx',\n 'ASML:AMS':'https://www.asml.com/en/investors/financial-calendar',\n 'SAP:XETRA':'https://www.sap.com/investors/en/financial-calendar.html',\n 'MC:PAR':'https://www.lvmh.com/en/financial-calendar/',\n 'SHEL:LSE':'https://www.shell.com/investors/financial-calendar.html',\n '7203:TSE':'https://global.toyota/en/ir/',\n '0700:HKEX':'https://www.tencent.com/investors/investor-kit-calendar/',\n 'NESN:SIX':'https://www.nestle.com/investors/events'\n};\nfunction ccDay(now=Date.now()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Paris',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now));}\nfunction ccDate(s){const v=String(s||'').slice(0,10);return /^\\d{4}-\\d{2}-\\d{2}$/.test(v)&&Number.isFinite(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v?v:null;}\nfunction ccUpcoming(date,now){return ccDate(date)&&date>=ccDay(now)&&Date.parse(date)<=now+366*86400000;}\nfunction ccText(s){return String(s||'').replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi,' ').replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/&quot;/gi,'\"').replace(/&#39;/g,\"'\").replace(/\\s+/g,' ').trim();}\nfunction ccDecodeMcp(raw){if(typeof raw!=='string')raw=JSON.stringify(raw);let d;try{d=JSON.parse(raw);}catch{const messages=raw.split(/\\r?\\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trim());for(const m of messages)try{const x=JSON.parse(m);if(x.result||x.error){d=x;break;}}catch{}}if(!d||d.error||d.result?.isError)throw Error('Yahoo MCP request failed');const content=d.result?.content?.find(b=>b.type==='text');if(!content)throw Error('Yahoo MCP returned no company data');return JSON.parse(content.text);}\nfunction ccYahoo(raw,stock,now=Date.now()){\n const info=ccDecodeMcp(raw);if(String(info.symbol||'').toUpperCase()!==stock.yahoo_symbol.toUpperCase())throw Error('Yahoo symbol mismatch');\n const zone=info.exchangeTimezoneName||'UTC',events=[],source_url='https://finance.yahoo.com/quote/'+encodeURIComponent(stock.yahoo_symbol)+'/';\n const toDay=t=>{if(!Number.isFinite(t)||t<=0)return null;try{return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t*1000));}catch{return null;}};\n const start=info.earningsTimestampStart||info.earningsTimestamp,end=info.earningsTimestampEnd||start,date=toDay(start),date_end=toDay(end);\n if(ccUpcoming(date,now)&&date_end&&date_end>=date&&end*1000>=now)events.push({type:'earnings',title:'Earnings / results',date,date_end,verification:info.isEarningsDateEstimate===false&&date===date_end?'provider_scheduled':'provider_estimate',source_url,source_fields:{earningsTimestamp:info.earningsTimestamp??null,earningsTimestampStart:start,earningsTimestampEnd:end,isEarningsDateEstimate:info.isEarningsDateEstimate??null},timezone:zone});\n // Yahoo dividend fields encode calendar dates at UTC midnight, not exchange-local instants.\n for(const [field,type,title] of [['exDividendDate','ex_dividend','Ex-dividend date'],['dividendDate','dividend_payment','Dividend payment']]){const date=Number.isFinite(info[field])&&info[field]>0?new Date(info[field]*1000).toISOString().slice(0,10):null;if(ccUpcoming(date,now))events.push({type,title,date,date_end:date,verification:'provider_reported',source_url,source_fields:{[field]:info[field]},timezone:'date_only_utc_encoded'});}\n return events;\n}\nfunction ccType(s){return /ex.dividend|dividend rights/i.test(s)?'ex_dividend':/dividend.*pay|payment.*dividend/i.test(s)?'dividend_payment':/annual general|shareholder.*meeting|\\bagm\\b/i.test(s)?'shareholder_meeting':/earnings|results|revenue|sales/i.test(s)?'earnings':/annual report/i.test(s)?'annual_report':/investor|roadshow|conference|capital markets/i.test(s)?'investor_event':null;}\nfunction ccIssuer(html,stock,url,now=Date.now()){\n html=String(html||'');if(/access denied|captcha|verify you are human|just a moment/i.test(ccText(html).slice(0,1500)))throw Error('Issuer page unavailable or blocked');const events=[];let parsed=0;\n const add=(date,title,quote,status)=>{const type=ccType(title);if(!type||!ccDate(date))return;parsed++;if(/cancelled|canceled/i.test(status||'')||!ccUpcoming(date,now))return;events.push({type,title:ccText(title).slice(0,140),date,date_end:date,verification:'issuer_checked',source_url:url,evidence_quote:ccText(quote).slice(0,350),timezone:'date_only'});};\n // Parse explicit schema.org Event objects; do not associate unrelated page dates with titles.\n const walk=x=>{if(Array.isArray(x))return x.forEach(walk);if(!x||typeof x!=='object')return;const types=Array.isArray(x['@type'])?x['@type']:[x['@type']];if(types.some(t=>/^(Event|BusinessEvent|EducationEvent)$/.test(t||'')))add(String(x.startDate||'').slice(0,10),x.name||'',JSON.stringify({name:x.name,startDate:x.startDate,eventStatus:x.eventStatus}),x.eventStatus);if(x['@graph'])walk(x['@graph']);};\n for(const m of html.matchAll(/<script\\b[^>]*type=[\"']application\\/ld\\+json[\"'][^>]*>([\\s\\S]*?)<\\/script>/gi))try{walk(JSON.parse(m[1]));}catch{}\n // Tencent's published calendar uses an explicit Hong Kong date field in each event card.\n if(stock.stock_id==='0700:HKEX')for(const m of html.matchAll(/<p[^>]*class=[\"'][^\"']*\\bevent-hk-time\\b[^\"']*[\"'][^>]*>\\s*(\\d{4})\\/(\\d{2})\\/(\\d{2})[^<]*<\\/p>([\\s\\S]{0,2200}?)<h[3-6][^>]*>([\\s\\S]*?)<\\/h[3-6]>/gi))add(m[1]+'-'+m[2]+'-'+m[3],ccText(m[5]),m[1]+'/'+m[2]+'/'+m[3]+' '+ccText(m[5]));\n // Calendar table rows only: one explicit full date and a named event in the same row.\n const month={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};\n for(const m of html.matchAll(/<tr\\b[^>]*>([\\s\\S]{0,8000}?)<\\/tr>/gi)){const text=ccText(m[1]),dates=[];for(const d of text.matchAll(/\\b(20\\d{2})[-/](\\d{2})[-/](\\d{2})\\b/g))dates.push(d[1]+'-'+d[2]+'-'+d[3]);for(const d of text.matchAll(/\\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+(\\d{1,2}),?\\s+(20\\d{2})\\b/gi))dates.push(d[3]+'-'+String(month[d[1].slice(0,3).toLowerCase()]).padStart(2,'0')+'-'+d[2].padStart(2,'0'));if(new Set(dates).size===1&&text.length<1000)add(dates[0],text,text);}\n return {events:[...new Map(events.map(e=>[e.type+'|'+e.date+'|'+e.title,e])).values()].slice(0,15),parsed};\n}\nfunction ccTargets(c){let stocks=c.universe.slice(0,10);if(['earnings','stock'].includes(c.action)||c.action==='catalysts'&&c.args?.length===2){const [ticker,exchange]=c.args||[];stocks=stocks.filter(s=>(s.ticker.toUpperCase()===String(ticker||'').toUpperCase()||s.stock_id.toUpperCase()===String(ticker||'').toUpperCase())&&(!exchange||s.exchange.toUpperCase()===exchange.toUpperCase()));if(stocks.length!==1)return [];}return stocks;}\nfunction ccPlans(c,now=Date.now()){if(!['collect','catalysts','earnings','stock'].includes(c.action)||c.action==='catalysts'&&c.args?.[0]==='status')return [];const plans=[];for(const stock of ccTargets(c)){const old=c.state.Meta?.['calendar_'+stock.stock_id],age=old?.checked_at?now-Date.parse(old.checked_at):Infinity,cooldown=old?.provider_status==='ok'?21600000:900000;if(age<cooldown)continue;plans.push({kind:'yahoo',stock,url:c.cfg.mcp_url});if(CC_PAGES[stock.stock_id])plans.push({kind:'issuer',stock,url:CC_PAGES[stock.stock_id]});}return plans;}\nfunction ccApply(c,responses,plans,now=Date.now()){\n const at=new Date(now).toISOString(),records={};c.dirty=c.dirty||[];c.state.Meta=c.state.Meta||{};\n for(let i=0;i<plans.length;i++){const plan=plans[i],id=plan.stock.stock_id,old=c.state.Meta['calendar_'+id];let r=records[id];if(!r){r=records[id]={kind:'calendar_observation',stock_id:id,company:plan.stock.company,checked_at:at,provider_events:[],issuer_events:[],provider_status:'not_checked',issuer_status:'not_checked'};}\n  const response=responses[i]||{},raw=response.response?.body??response.response??response.body??response.data??response;const status=Number(response.statusCode||response.response?.statusCode||200);\n  try{if(status>=400||response.error)throw Error('Source HTTP/request unavailable'+(status>=400?' ('+status+')':''));if(plan.kind==='yahoo'){r.provider_events=ccYahoo(raw,plan.stock,now).map(e=>({...e,checked_at:at}));r.provider_status='ok';}else{const parsed=ccIssuer(raw,plan.stock,plan.url,now);r.issuer_status=parsed.parsed?'ok':'no_structured_calendar';r.issuer_url=plan.url;r.issuer_events=parsed.events.map(e=>({...e,checked_at:at}));if(!parsed.parsed&&old?.issuer_events?.length)r.issuer_events=old.issuer_events.filter(e=>now-Date.parse(e.checked_at)<7*86400000).map(e=>({...e,stale:true}));}}\n  catch(e){r[plan.kind==='yahoo'?'provider_status':'issuer_status']='unavailable';r[plan.kind+'_error']=String(e.message).slice(0,180);const field=plan.kind==='yahoo'?'provider_events':'issuer_events';r[field]=(old?.[field]||[]).filter(e=>now-Date.parse(e.checked_at)<7*86400000).map(e=>({...e,stale:true}));}\n }\n for(const [id,value] of Object.entries(records)){const key='calendar_'+id;c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});}c.operation='write';return c;\n}\nfunction ccRows(c){const rows=[],now=Date.now();for(const r of Object.values(c.state.Meta||{}).filter(r=>r.kind==='calendar_observation')){const primary=r.issuer_events||[];for(const e of [...primary,...(r.provider_events||[])]){if(!ccUpcoming(e.date_end||e.date,now)||now-Date.parse(e.checked_at)>7*86400000)continue;if(e.verification!=='issuer_checked'&&primary.some(p=>p.type===e.type&&p.date===e.date&&!p.stale))continue;rows.push({...e,stock_id:r.stock_id,company:r.company,stale:e.stale||now-Date.parse(e.checked_at)>86400000});}}\n for(const r of Object.values(c.state.Earnings||{}))if(r.status==='evidence_checked')for(const f of r.facts||[])if(f.kind==='confirmed_release_date'&&ccUpcoming(String(f.value).slice(0,10),now)){const s=c.universe.find(s=>s.issuer_id===r.issuer_id);if(s&&!rows.some(e=>e.stock_id===s.stock_id&&e.type==='earnings'&&e.date===f.value.slice(0,10)))rows.push({stock_id:s.stock_id,company:s.company,type:'earnings',title:'Issuer release',date:f.value.slice(0,10),date_end:f.value.slice(0,10),verification:'issuer_checked',source_url:f.source_url,checked_at:r.checked_at,stale:now-Date.parse(r.checked_at)>86400000});}\n return rows.sort((a,b)=>a.date.localeCompare(b.date)||(a.verification==='issuer_checked'?-1:1));\n}\nfunction ccLabel(e){return (e.verification==='issuer_checked'?'ISSUER-SOURCE CHECKED':e.verification==='provider_scheduled'?'YAHOO SCHEDULED · issuer not checked':e.verification==='provider_estimate'?'YAHOO ESTIMATE / WINDOW':'YAHOO REPORTED · issuer not checked')+(e.stale?' · STALE':'');}\nfunction ccBoard(c,compact=false){let rows=ccRows(c);const args=compact?[]:c.args||[],links=[],lines=['CATALYST BOARD'];if(args.length&&args[0]!=='status'){const [ticker,exchange,...extra]=args,stocks=c.universe.filter(s=>s.ticker.toUpperCase()===String(ticker).toUpperCase()&&s.exchange.toUpperCase()===String(exchange||'').toUpperCase());if(stocks.length!==1||extra.length)return {text:'Use /catalysts or /catalysts TICKER EXCHANGE, or /catalysts status.',links:[]};rows=rows.filter(e=>e.stock_id===stocks[0].stock_id);}\n if(args[0]==='status'){lines.push('Calendar source checks; failed sources do not confirm dates.');for(const s of c.universe){const r=c.state.Meta?.['calendar_'+s.stock_id];lines.push(s.stock_id+' · '+(r?.checked_at||'not checked'),'Yahoo: '+(r?.provider_status||'not checked')+' · issuer: '+(r?.issuer_status||'not checked'));}return {text:lines.join('\\n'),links};}\n for(const t of Object.values(c.state.Meta||{}))if(t.kind==='team_catalyst'&&t.status==='open'&&(!args.length||t.stock_id===args.slice(0,2).join(':').toUpperCase()))rows.push({...t,source_url:t.source_url,verification:'team_plan'});rows.sort((a,b)=>a.date.localeCompare(b.date));\n for(const e of rows.slice(0,compact?2:10)){const range=e.date_end&&e.date_end!==e.date?e.date+' to '+e.date_end:e.date;lines.push(range+' · '+e.stock_id.replace(':',' ')+' · '+e.title);lines.push(e.verification==='team_plan'?'TEAM PLAN · date/source unverified':ccLabel(e));if(!compact){if(e.question)lines.push('Check: '+e.question,'/catalystdone '+e.id+' conclusion');else lines.push('Checked '+e.checked_at+(e.type==='earnings'?' · verify guidance and same-period expectations.':''));if(args.length===2&&e.evidence_quote)lines.push('Source excerpt: '+e.evidence_quote.slice(0,230));if(links.length<6)links.push({label:e.stock_id+' · '+e.title.slice(0,35),url:e.source_url});const conflicting=rows.filter(p=>p.stock_id===e.stock_id&&p.type===e.type&&p.verification!==e.verification&&p.date!==e.date);if(conflicting.length)lines.push('DATE DISAGREEMENT · compare issuer and provider entries before relying on a date.');}}\n const records=Object.values(c.state.Meta||{}).filter(r=>r.kind==='calendar_observation');if(!rows.length)lines.push('No upcoming dated event found in the available checked sources. Missing dates are not inferred.');if(!compact){if(rows.length>10)lines.push((rows.length-10)+' more event(s); use /catalysts TICKER EXCHANGE to inspect one company.');lines.push('','Coverage: '+records.length+'/'+c.universe.length+' listings checked; '+records.filter(r=>r.provider_status==='ok').length+' Yahoo responses; '+records.filter(r=>r.issuer_status==='ok').length+' issuer calendars parsed.','Yahoo dates can change and do not verify issuer announcements. Times are omitted; dates retain source-local calendar meaning.','/catalysts status for failed/missing sources.','/catalyst TICKER EXCHANGE YYYY-MM-DD | event | metric/question | https://source');}\n return {text:lines.join('\\n'),links};\n}\nfunction ccStockSummary(c,stock){const view=ccBoard({...c,args:[stock.ticker,stock.exchange]},false);return view.text.split('\\nCoverage:')[0]+'\\n/catalysts '+stock.ticker+' '+stock.exchange+' for calendar sources.';}\n\nconst c=$input.first().json;c.calendar_plans=ccPlans(c);return [{json:c}];"
+      }
+    },
+    {
+      "id": "e17e0b9e-ab7c-549f-8807-7d67467c91c8",
+      "name": "Calendar refresh needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "80c1495a-4c0b-4284-8284-c964d3d203cd",
+              "leftValue": "={{ $json.calendar_plans.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "99871b77-aeb2-53fc-a00c-b4a45b12df2d",
+      "name": "Yahoo calendar requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.first().json.calendar_plans.filter(p=>p.kind==='yahoo').map(plan=>({json:{...plan,payload:{jsonrpc:'2.0',id:7,method:'tools/call',params:{name:'get_company_info',arguments:{ticker:plan.stock.yahoo_symbol,response_format:'json'}}}}}));"
+      }
+    },
+    {
+      "id": "eb94ea42-8002-50e1-b4bd-171ba5c61065",
+      "name": "Read Yahoo calendar fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            },
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 TickerWatch research"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 20000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 250
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "response",
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "contentType": "json"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "510e0abf-011b-5d9b-956d-91edcd8ec7c5",
+      "name": "Keep Yahoo calendar responses",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const c=$('Plan calendar checks').first().json;c.calendar_yahoo_responses=$input.all().map(i=>i.json);if(c.calendar_yahoo_responses.length!==c.calendar_plans.filter(p=>p.kind==='yahoo').length)throw Error('Yahoo calendar response count mismatch');return [{json:c}];"
+      }
+    },
+    {
+      "id": "1e5ddaeb-0e74-53cd-b07a-98c4bd1dd460",
+      "name": "Issuer calendar requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.first().json.calendar_plans.filter(p=>p.kind==='issuer').map(plan=>({json:plan}));"
+      }
+    },
+    {
+      "id": "f4ffd2be-badc-5d51-906a-5e8e4b58b13d",
+      "name": "Read issuer calendar pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "text/html, application/ld+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 TickerWatch research"
+            }
+          ]
+        },
+        "sendBody": false,
+        "specifyBody": "json",
+        "options": {
+          "timeout": 20000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 250
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "response",
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "contentType": "json"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "45dbb167-538e-536f-aa39-160da5abafb1",
+      "name": "Validate and retain calendar evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Dedicated calendar discovery. Provider dates never become issuer-confirmed facts.\nconst CC_PAGES={\n 'AAPL:NASDAQ':'https://investor.apple.com/investor-relations/',\n 'MSFT:NASDAQ':'https://www.microsoft.com/en-us/Investor/events/default.aspx',\n 'NVDA:NASDAQ':'https://investor.nvidia.com/events-and-presentations/events-and-presentations/default.aspx',\n 'ASML:AMS':'https://www.asml.com/en/investors/financial-calendar',\n 'SAP:XETRA':'https://www.sap.com/investors/en/financial-calendar.html',\n 'MC:PAR':'https://www.lvmh.com/en/financial-calendar/',\n 'SHEL:LSE':'https://www.shell.com/investors/financial-calendar.html',\n '7203:TSE':'https://global.toyota/en/ir/',\n '0700:HKEX':'https://www.tencent.com/investors/investor-kit-calendar/',\n 'NESN:SIX':'https://www.nestle.com/investors/events'\n};\nfunction ccDay(now=Date.now()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Paris',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now));}\nfunction ccDate(s){const v=String(s||'').slice(0,10);return /^\\d{4}-\\d{2}-\\d{2}$/.test(v)&&Number.isFinite(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v?v:null;}\nfunction ccUpcoming(date,now){return ccDate(date)&&date>=ccDay(now)&&Date.parse(date)<=now+366*86400000;}\nfunction ccText(s){return String(s||'').replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi,' ').replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/&quot;/gi,'\"').replace(/&#39;/g,\"'\").replace(/\\s+/g,' ').trim();}\nfunction ccDecodeMcp(raw){if(typeof raw!=='string')raw=JSON.stringify(raw);let d;try{d=JSON.parse(raw);}catch{const messages=raw.split(/\\r?\\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trim());for(const m of messages)try{const x=JSON.parse(m);if(x.result||x.error){d=x;break;}}catch{}}if(!d||d.error||d.result?.isError)throw Error('Yahoo MCP request failed');const content=d.result?.content?.find(b=>b.type==='text');if(!content)throw Error('Yahoo MCP returned no company data');return JSON.parse(content.text);}\nfunction ccYahoo(raw,stock,now=Date.now()){\n const info=ccDecodeMcp(raw);if(String(info.symbol||'').toUpperCase()!==stock.yahoo_symbol.toUpperCase())throw Error('Yahoo symbol mismatch');\n const zone=info.exchangeTimezoneName||'UTC',events=[],source_url='https://finance.yahoo.com/quote/'+encodeURIComponent(stock.yahoo_symbol)+'/';\n const toDay=t=>{if(!Number.isFinite(t)||t<=0)return null;try{return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t*1000));}catch{return null;}};\n const start=info.earningsTimestampStart||info.earningsTimestamp,end=info.earningsTimestampEnd||start,date=toDay(start),date_end=toDay(end);\n if(ccUpcoming(date,now)&&date_end&&date_end>=date&&end*1000>=now)events.push({type:'earnings',title:'Earnings / results',date,date_end,verification:info.isEarningsDateEstimate===false&&date===date_end?'provider_scheduled':'provider_estimate',source_url,source_fields:{earningsTimestamp:info.earningsTimestamp??null,earningsTimestampStart:start,earningsTimestampEnd:end,isEarningsDateEstimate:info.isEarningsDateEstimate??null},timezone:zone});\n // Yahoo dividend fields encode calendar dates at UTC midnight, not exchange-local instants.\n for(const [field,type,title] of [['exDividendDate','ex_dividend','Ex-dividend date'],['dividendDate','dividend_payment','Dividend payment']]){const date=Number.isFinite(info[field])&&info[field]>0?new Date(info[field]*1000).toISOString().slice(0,10):null;if(ccUpcoming(date,now))events.push({type,title,date,date_end:date,verification:'provider_reported',source_url,source_fields:{[field]:info[field]},timezone:'date_only_utc_encoded'});}\n return events;\n}\nfunction ccType(s){return /ex.dividend|dividend rights/i.test(s)?'ex_dividend':/dividend.*pay|payment.*dividend/i.test(s)?'dividend_payment':/annual general|shareholder.*meeting|\\bagm\\b/i.test(s)?'shareholder_meeting':/earnings|results|revenue|sales/i.test(s)?'earnings':/annual report/i.test(s)?'annual_report':/investor|roadshow|conference|capital markets/i.test(s)?'investor_event':null;}\nfunction ccIssuer(html,stock,url,now=Date.now()){\n html=String(html||'');if(/access denied|captcha|verify you are human|just a moment/i.test(ccText(html).slice(0,1500)))throw Error('Issuer page unavailable or blocked');const events=[];let parsed=0;\n const add=(date,title,quote,status)=>{const type=ccType(title);if(!type||!ccDate(date))return;parsed++;if(/cancelled|canceled/i.test(status||'')||!ccUpcoming(date,now))return;events.push({type,title:ccText(title).slice(0,140),date,date_end:date,verification:'issuer_checked',source_url:url,evidence_quote:ccText(quote).slice(0,350),timezone:'date_only'});};\n // Parse explicit schema.org Event objects; do not associate unrelated page dates with titles.\n const walk=x=>{if(Array.isArray(x))return x.forEach(walk);if(!x||typeof x!=='object')return;const types=Array.isArray(x['@type'])?x['@type']:[x['@type']];if(types.some(t=>/^(Event|BusinessEvent|EducationEvent)$/.test(t||'')))add(String(x.startDate||'').slice(0,10),x.name||'',JSON.stringify({name:x.name,startDate:x.startDate,eventStatus:x.eventStatus}),x.eventStatus);if(x['@graph'])walk(x['@graph']);};\n for(const m of html.matchAll(/<script\\b[^>]*type=[\"']application\\/ld\\+json[\"'][^>]*>([\\s\\S]*?)<\\/script>/gi))try{walk(JSON.parse(m[1]));}catch{}\n // Tencent's published calendar uses an explicit Hong Kong date field in each event card.\n if(stock.stock_id==='0700:HKEX')for(const m of html.matchAll(/<p[^>]*class=[\"'][^\"']*\\bevent-hk-time\\b[^\"']*[\"'][^>]*>\\s*(\\d{4})\\/(\\d{2})\\/(\\d{2})[^<]*<\\/p>([\\s\\S]{0,2200}?)<h[3-6][^>]*>([\\s\\S]*?)<\\/h[3-6]>/gi))add(m[1]+'-'+m[2]+'-'+m[3],ccText(m[5]),m[1]+'/'+m[2]+'/'+m[3]+' '+ccText(m[5]));\n // Calendar table rows only: one explicit full date and a named event in the same row.\n const month={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};\n for(const m of html.matchAll(/<tr\\b[^>]*>([\\s\\S]{0,8000}?)<\\/tr>/gi)){const text=ccText(m[1]),dates=[];for(const d of text.matchAll(/\\b(20\\d{2})[-/](\\d{2})[-/](\\d{2})\\b/g))dates.push(d[1]+'-'+d[2]+'-'+d[3]);for(const d of text.matchAll(/\\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+(\\d{1,2}),?\\s+(20\\d{2})\\b/gi))dates.push(d[3]+'-'+String(month[d[1].slice(0,3).toLowerCase()]).padStart(2,'0')+'-'+d[2].padStart(2,'0'));if(new Set(dates).size===1&&text.length<1000)add(dates[0],text,text);}\n return {events:[...new Map(events.map(e=>[e.type+'|'+e.date+'|'+e.title,e])).values()].slice(0,15),parsed};\n}\nfunction ccTargets(c){let stocks=c.universe.slice(0,10);if(['earnings','stock'].includes(c.action)||c.action==='catalysts'&&c.args?.length===2){const [ticker,exchange]=c.args||[];stocks=stocks.filter(s=>(s.ticker.toUpperCase()===String(ticker||'').toUpperCase()||s.stock_id.toUpperCase()===String(ticker||'').toUpperCase())&&(!exchange||s.exchange.toUpperCase()===exchange.toUpperCase()));if(stocks.length!==1)return [];}return stocks;}\nfunction ccPlans(c,now=Date.now()){if(!['collect','catalysts','earnings','stock'].includes(c.action)||c.action==='catalysts'&&c.args?.[0]==='status')return [];const plans=[];for(const stock of ccTargets(c)){const old=c.state.Meta?.['calendar_'+stock.stock_id],age=old?.checked_at?now-Date.parse(old.checked_at):Infinity,cooldown=old?.provider_status==='ok'?21600000:900000;if(age<cooldown)continue;plans.push({kind:'yahoo',stock,url:c.cfg.mcp_url});if(CC_PAGES[stock.stock_id])plans.push({kind:'issuer',stock,url:CC_PAGES[stock.stock_id]});}return plans;}\nfunction ccApply(c,responses,plans,now=Date.now()){\n const at=new Date(now).toISOString(),records={};c.dirty=c.dirty||[];c.state.Meta=c.state.Meta||{};\n for(let i=0;i<plans.length;i++){const plan=plans[i],id=plan.stock.stock_id,old=c.state.Meta['calendar_'+id];let r=records[id];if(!r){r=records[id]={kind:'calendar_observation',stock_id:id,company:plan.stock.company,checked_at:at,provider_events:[],issuer_events:[],provider_status:'not_checked',issuer_status:'not_checked'};}\n  const response=responses[i]||{},raw=response.response?.body??response.response??response.body??response.data??response;const status=Number(response.statusCode||response.response?.statusCode||200);\n  try{if(status>=400||response.error)throw Error('Source HTTP/request unavailable'+(status>=400?' ('+status+')':''));if(plan.kind==='yahoo'){r.provider_events=ccYahoo(raw,plan.stock,now).map(e=>({...e,checked_at:at}));r.provider_status='ok';}else{const parsed=ccIssuer(raw,plan.stock,plan.url,now);r.issuer_status=parsed.parsed?'ok':'no_structured_calendar';r.issuer_url=plan.url;r.issuer_events=parsed.events.map(e=>({...e,checked_at:at}));if(!parsed.parsed&&old?.issuer_events?.length)r.issuer_events=old.issuer_events.filter(e=>now-Date.parse(e.checked_at)<7*86400000).map(e=>({...e,stale:true}));}}\n  catch(e){r[plan.kind==='yahoo'?'provider_status':'issuer_status']='unavailable';r[plan.kind+'_error']=String(e.message).slice(0,180);const field=plan.kind==='yahoo'?'provider_events':'issuer_events';r[field]=(old?.[field]||[]).filter(e=>now-Date.parse(e.checked_at)<7*86400000).map(e=>({...e,stale:true}));}\n }\n for(const [id,value] of Object.entries(records)){const key='calendar_'+id;c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});}c.operation='write';return c;\n}\nfunction ccRows(c){const rows=[],now=Date.now();for(const r of Object.values(c.state.Meta||{}).filter(r=>r.kind==='calendar_observation')){const primary=r.issuer_events||[];for(const e of [...primary,...(r.provider_events||[])]){if(!ccUpcoming(e.date_end||e.date,now)||now-Date.parse(e.checked_at)>7*86400000)continue;if(e.verification!=='issuer_checked'&&primary.some(p=>p.type===e.type&&p.date===e.date&&!p.stale))continue;rows.push({...e,stock_id:r.stock_id,company:r.company,stale:e.stale||now-Date.parse(e.checked_at)>86400000});}}\n for(const r of Object.values(c.state.Earnings||{}))if(r.status==='evidence_checked')for(const f of r.facts||[])if(f.kind==='confirmed_release_date'&&ccUpcoming(String(f.value).slice(0,10),now)){const s=c.universe.find(s=>s.issuer_id===r.issuer_id);if(s&&!rows.some(e=>e.stock_id===s.stock_id&&e.type==='earnings'&&e.date===f.value.slice(0,10)))rows.push({stock_id:s.stock_id,company:s.company,type:'earnings',title:'Issuer release',date:f.value.slice(0,10),date_end:f.value.slice(0,10),verification:'issuer_checked',source_url:f.source_url,checked_at:r.checked_at,stale:now-Date.parse(r.checked_at)>86400000});}\n return rows.sort((a,b)=>a.date.localeCompare(b.date)||(a.verification==='issuer_checked'?-1:1));\n}\nfunction ccLabel(e){return (e.verification==='issuer_checked'?'ISSUER-SOURCE CHECKED':e.verification==='provider_scheduled'?'YAHOO SCHEDULED · issuer not checked':e.verification==='provider_estimate'?'YAHOO ESTIMATE / WINDOW':'YAHOO REPORTED · issuer not checked')+(e.stale?' · STALE':'');}\nfunction ccBoard(c,compact=false){let rows=ccRows(c);const args=compact?[]:c.args||[],links=[],lines=['CATALYST BOARD'];if(args.length&&args[0]!=='status'){const [ticker,exchange,...extra]=args,stocks=c.universe.filter(s=>s.ticker.toUpperCase()===String(ticker).toUpperCase()&&s.exchange.toUpperCase()===String(exchange||'').toUpperCase());if(stocks.length!==1||extra.length)return {text:'Use /catalysts or /catalysts TICKER EXCHANGE, or /catalysts status.',links:[]};rows=rows.filter(e=>e.stock_id===stocks[0].stock_id);}\n if(args[0]==='status'){lines.push('Calendar source checks; failed sources do not confirm dates.');for(const s of c.universe){const r=c.state.Meta?.['calendar_'+s.stock_id];lines.push(s.stock_id+' · '+(r?.checked_at||'not checked'),'Yahoo: '+(r?.provider_status||'not checked')+' · issuer: '+(r?.issuer_status||'not checked'));}return {text:lines.join('\\n'),links};}\n for(const t of Object.values(c.state.Meta||{}))if(t.kind==='team_catalyst'&&t.status==='open'&&(!args.length||t.stock_id===args.slice(0,2).join(':').toUpperCase()))rows.push({...t,source_url:t.source_url,verification:'team_plan'});rows.sort((a,b)=>a.date.localeCompare(b.date));\n for(const e of rows.slice(0,compact?2:10)){const range=e.date_end&&e.date_end!==e.date?e.date+' to '+e.date_end:e.date;lines.push(range+' · '+e.stock_id.replace(':',' ')+' · '+e.title);lines.push(e.verification==='team_plan'?'TEAM PLAN · date/source unverified':ccLabel(e));if(!compact){if(e.question)lines.push('Check: '+e.question,'/catalystdone '+e.id+' conclusion');else lines.push('Checked '+e.checked_at+(e.type==='earnings'?' · verify guidance and same-period expectations.':''));if(args.length===2&&e.evidence_quote)lines.push('Source excerpt: '+e.evidence_quote.slice(0,230));if(links.length<6)links.push({label:e.stock_id+' · '+e.title.slice(0,35),url:e.source_url});const conflicting=rows.filter(p=>p.stock_id===e.stock_id&&p.type===e.type&&p.verification!==e.verification&&p.date!==e.date);if(conflicting.length)lines.push('DATE DISAGREEMENT · compare issuer and provider entries before relying on a date.');}}\n const records=Object.values(c.state.Meta||{}).filter(r=>r.kind==='calendar_observation');if(!rows.length)lines.push('No upcoming dated event found in the available checked sources. Missing dates are not inferred.');if(!compact){if(rows.length>10)lines.push((rows.length-10)+' more event(s); use /catalysts TICKER EXCHANGE to inspect one company.');lines.push('','Coverage: '+records.length+'/'+c.universe.length+' listings checked; '+records.filter(r=>r.provider_status==='ok').length+' Yahoo responses; '+records.filter(r=>r.issuer_status==='ok').length+' issuer calendars parsed.','Yahoo dates can change and do not verify issuer announcements. Times are omitted; dates retain source-local calendar meaning.','/catalysts status for failed/missing sources.','/catalyst TICKER EXCHANGE YYYY-MM-DD | event | metric/question | https://source');}\n return {text:lines.join('\\n'),links};\n}\nfunction ccStockSummary(c,stock){const view=ccBoard({...c,args:[stock.ticker,stock.exchange]},false);return view.text.split('\\nCoverage:')[0]+'\\n/catalysts '+stock.ticker+' '+stock.exchange+' for calendar sources.';}\n\nconst c=$('Keep Yahoo calendar responses').first().json;const yahoo=c.calendar_yahoo_responses,issuer=$input.all().map(i=>i.json);if(issuer.length!==c.calendar_plans.filter(p=>p.kind==='issuer').length)throw Error('Issuer calendar response count mismatch');let y=0,p=0;const responses=c.calendar_plans.map(plan=>plan.kind==='yahoo'?yahoo[y++]:issuer[p++]);ccApply(c,responses,c.calendar_plans);delete c.calendar_plans;delete c.calendar_yahoo_responses;return [{json:c}];"
+      }
+    },
+    {
+      "id": "65a138fd-a879-5775-acee-300876c4ecb5",
+      "name": "Use cached calendar evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const c=$input.first().json;delete c.calendar_plans;c.operation='write';c.dirty=[];return [{json:c}];"
+      }
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Plan calendar checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan calendar checks": {
+      "main": [
+        [
+          {
+            "node": "Calendar refresh needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendar refresh needed?": {
+      "main": [
+        [
+          {
+            "node": "Yahoo calendar requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Use cached calendar evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yahoo calendar requests": {
+      "main": [
+        [
+          {
+            "node": "Read Yahoo calendar fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Yahoo calendar fields": {
+      "main": [
+        [
+          {
+            "node": "Keep Yahoo calendar responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Yahoo calendar responses": {
+      "main": [
+        [
+          {
+            "node": "Issuer calendar requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Issuer calendar requests": {
+      "main": [
+        [
+          {
+            "node": "Read issuer calendar pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read issuer calendar pages": {
+      "main": [
+        [
+          {
+            "node": "Validate and retain calendar evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

@@ -1,0 +1,1 @@
+const c=$('Plan calendar checks').first().json;c.calendar_yahoo_responses=$input.all().map(i=>i.json);if(c.calendar_yahoo_responses.length!==c.calendar_plans.filter(p=>p.kind==='yahoo').length)throw Error('Yahoo calendar response count mismatch');return [{json:c}];

@@ -1,0 +1,1 @@
+const c=$input.first().json;const b=Object.values(c.state.Briefings).filter(b=>!b.content_review_required&&b.chunks?.some(x=>['pending','failed'].includes(x.status)&&x.attempts<3)).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0];c.briefing_key=b?.key;c.skip_delivery=!b;return [{json:c}];

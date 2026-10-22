@@ -1,0 +1,1 @@
+return $input.first().json.av_plans.map(plan=>({json:plan}));

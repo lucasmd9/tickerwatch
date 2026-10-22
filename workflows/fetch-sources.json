@@ -1,0 +1,235 @@
+{
+  "id": "twFetchSources",
+  "name": "TickerWatch • Fetch Sources",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "767c7ae1-454c-59ab-a748-8ecdaeaea015",
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8e208fb6-8837-4c42-b0c3-37a38c2ac118",
+              "leftValue": "={{ $json.source.kind === 'rss' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3594ad1b-c394-56f7-b116-290f2a05fd8b",
+      "name": "RSS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source.url }}",
+        "options": {}
+      },
+      "id": "eebf8505-f1c0-5ff3-9351-448011ab399e",
+      "name": "Read RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const {source,cfg} = $('Input').first().json;\nconst rows = $input.all().map(i => i.json);\nconst bad = rows.find(x => x.error);\nconst allEvents = rows.filter(x => x.title && x.link).map(x => ({\n  source_id: source.id, source_name: source.name, source_category: source.category,\n  source_item_id: String(x.guid || x.link), title: String(x.title).slice(0,500),\n  url: String(x.link), snippet: String(x.contentSnippet || x.content || '').replace(/<[^>]*>/g,' ').slice(0,3000),\n  published_on: x.isoDate || x.pubDate || null,\n  collected_at: new Date().toISOString(), evidence_scope: 'headline_and_feed_summary'\n}));\nconst cap = Math.max(1, Math.min(100, Number(cfg.max_sources_articles) || 20));\nconst events = allEvents.sort((a,b) => (Date.parse(b.published_on)||0) - (Date.parse(a.published_on)||0)).slice(0,cap);\nreturn [{json:{events,status:{\n  id:source.id, ok:!bad, count:events.length, received_count:allEvents.length,\n  possibly_truncated:allEvents.length>cap || allEvents.length>=100,\n  error:bad?'Source request failed':null, coverage:'Feed items only; not exhaustive'\n}}}];"
+      },
+      "id": "5c0de103-e87c-5791-ba6c-433e0784c5f6",
+      "name": "Normalise RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "id": "9d3b8ad7-c254-5b9d-b95e-6a68a48f3048",
+      "name": "Pace Yahoo",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Input').first().json.cfg.mcp_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  jsonrpc: \"2.0\",\n  id: 2,\n  method: \"tools/call\",\n  params: {\n    name: \"get_market_news\",\n    arguments: {\n      ticker: $(\"Input\").first().json.source.symbol,\n      count: 20,\n      response_format: \"json\"\n    }\n  }\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "response"
+            }
+          },
+          "timeout": 45000
+        }
+      },
+      "id": "a4aba484-7d30-5cb6-be1c-7a4f3680ac32",
+      "name": "Yahoo news",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        656
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const {source}= $('Input').first().json;const raw=$input.first().json;let env,data,note;\ntry{if(raw.error)throw Error('Request failed');const body=String(raw.response||raw.data||'');const frames=body.split('\\n').filter(s=>s.startsWith('data:')).map(s=>s.slice(5).trim());env=JSON.parse(frames.length?frames[frames.length-1]:body);if(env.error||env.result?.isError)throw Error('MCP tool error');const t=(env.result?.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\\n');if(/^No recent news found/i.test(t)){data={news:[]};}else{data=JSON.parse(t.replace(/:\\s*(NaN|-?Infinity)(\\s*[,}\\]])/g,': null$2'));if(!Array.isArray(data.news))throw Error('Unexpected news schema');}}catch(e){note=e.message;data={news:[]};}\nconst events=data.news.filter(n=>n.title&&/^https?:\\/\\//.test(n.url)).map(n=>({source_id:source.id,source_name:n.provider||'Yahoo Finance',source_category:'company',source_item_id:n.url,title:String(n.title).slice(0,500),url:n.url,snippet:String(n.summary||'').slice(0,3000),published_on:n.pubDate||null,collected_at:new Date().toISOString(),evidence_scope:'headline_and_feed_summary'}));\nreturn [{json:{events,status:{id:source.id,ok:!note,count:events.length,error:note||null,possibly_truncated:(data.news||[]).length>=20,coverage:'Ticker feed may contain unrelated stories; matching required'}}}];\n"
+      },
+      "id": "3f7d2e82-f01d-5eae-ba35-4594acb10e5a",
+      "name": "Normalise Yahoo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Source adapter\nOne source in → one {events,status} result out, including empty/error results. Yahoo ticker association is NOT accepted as proof an article concerns that company. Dates and links remain visible.",
+        "height": 240,
+        "width": 680
+      },
+      "id": "d0668d4d-e6ac-5735-be38-49876741d5f6",
+      "name": "Read me 7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "RSS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS?": {
+      "main": [
+        [
+          {
+            "node": "Read RSS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pace Yahoo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read RSS": {
+      "main": [
+        [
+          {
+            "node": "Normalise RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pace Yahoo": {
+      "main": [
+        [
+          {
+            "node": "Yahoo news",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yahoo news": {
+      "main": [
+        [
+          {
+            "node": "Normalise Yahoo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

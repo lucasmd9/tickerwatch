@@ -1,0 +1,235 @@
+{
+  "id": "twErrorHandler",
+  "name": "TickerWatch • Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f3fa949b-7c32-5409-9db6-f13605bc86ff",
+      "name": "Production error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a3267b5e-e5a1-4423-9350-0e652757da4e",
+              "name": "cfg",
+              "type": "object",
+              "value": "{\"spreadsheet_id\":\"PASTE_SPREADSHEET_ID\",\"owner_chat_id\":\"SET_OWNER_CHAT_ID\",\"mcp_url\":\"http://host.docker.internal:8931/mcp\",\"model\":\"openai/gpt-oss-20b\",\"manual_mode\":\"collect\",\"max_company_queries\":10,\"max_events_per_run\":3,\"max_candidates_per_event\":2,\"max_news_age_days\":7,\"max_search_attempts_daily\":10,\"max_search_credits_daily\":10,\"max_earnings_per_run\":1,\"universe_version\":\"v3-published-matching\",\"max_sources_articles\":20,\"analysis_version\":\"groq-v1\",\"reviewed_exposures\":[{\"stock_id\":\"ASML:AMS\",\"exposure_tags\":\"semiconductors\",\"exposure_evidence_url\":\"https://www.asml.com/en/company/about-asml\",\"reviewed_on\":\"2026-10-19\"},{\"stock_id\":\"SHEL:LSE\",\"exposure_tags\":\"oil_revenue\",\"exposure_evidence_url\":\"https://www.shell.com/what-we-do/oil-and-natural-gas.html\",\"reviewed_on\":\"2026-10-19\"}],\"model_provider\":\"groq\"}"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "159876dd-41ff-50c5-801f-018a2ecca09d",
+      "name": "Error Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const j=$input.first().json;const cfg=typeof j.cfg==='string'?JSON.parse(j.cfg):j.cfg;\nconst e={execution_id:String(j.execution?.id||''),workflow:String(j.workflow?.name||'TickerWatch'),node:String(j.execution?.lastNodeExecuted||'unknown'),at:new Date().toISOString()};\nreturn [{json:{cfg,operation:'read',error_record:e,error_notice:'TickerWatch failed at '+e.node+'. Execution '+e.execution_id+'. Inspect n8n executions. No source credentials or raw error text are included.'}}];\n"
+      },
+      "id": "2af706c7-0383-5355-9be4-af1f1641cb13",
+      "name": "Sanitise error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "twStore",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/twStore",
+          "cachedResultName": "TickerWatch • Store"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "f43d3738-2999-5a91-8a2c-3946157e6a63",
+      "name": "Load error log",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c=$input.first().json;c.dirty=[{table:'Runs',key:'error_'+c.error_record.execution_id,value:{...c.error_record,status:'error'}}];c.operation='write';return [{json:c}];\n"
+      },
+      "id": "eedba2b2-896c-5cb6-aef5-97f757719263",
+      "name": "Append error record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "twStore",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/twStore",
+          "cachedResultName": "TickerWatch • Store"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "85632d14-c9c3-527a-b42c-9f1e67ffba35",
+      "name": "Persist error log",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1104,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.cfg.owner_chat_id }}",
+        "text": "={{ $json.error_notice.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "0913b92f-3cfb-59c4-ade5-f363b70f9f43",
+      "name": "Notify owner",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1328,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Production error workflow\nSelect this in Main → Settings → Error workflow. Error text and credentials are not forwarded; only workflow, failed node, execution ID. If Sheets itself is unavailable logging stops; inspect n8n executions. Manual runs use execution errors directly.",
+        "height": 240,
+        "width": 680
+      },
+      "id": "d5ca2f55-8fd6-5320-8aed-3c8793c0946d",
+      "name": "Read me 7",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Production error": {
+      "main": [
+        [
+          {
+            "node": "Error Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Settings": {
+      "main": [
+        [
+          {
+            "node": "Sanitise error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitise error": {
+      "main": [
+        [
+          {
+            "node": "Load error log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load error log": {
+      "main": [
+        [
+          {
+            "node": "Append error record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append error record": {
+      "main": [
+        [
+          {
+            "node": "Persist error log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist error log": {
+      "main": [
+        [
+          {
+            "node": "Notify owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Europe/Paris"
+  },
+  "active": false
+}

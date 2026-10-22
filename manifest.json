@@ -1,0 +1,84 @@
+{
+  "exported_on": "2026-10-22",
+  "runtime_workflows": 10,
+  "setup_workflows": 1,
+  "workflows": [
+    {
+      "id": "twMain",
+      "name": "TickerWatch",
+      "file": "workflows/main.json",
+      "nodes": 49,
+      "operational_nodes": 46
+    },
+    {
+      "id": "twStore",
+      "name": "TickerWatch • Store",
+      "file": "workflows/store.json",
+      "nodes": 9,
+      "operational_nodes": 8
+    },
+    {
+      "id": "twMatchUniverse",
+      "name": "TickerWatch • Match Universe",
+      "file": "workflows/match-universe.json",
+      "nodes": 3,
+      "operational_nodes": 2
+    },
+    {
+      "id": "twEvidenceSearch",
+      "name": "TickerWatch • Evidence Search",
+      "file": "workflows/evidence-search.json",
+      "nodes": 19,
+      "operational_nodes": 18
+    },
+    {
+      "id": "twAnalyseEvent",
+      "name": "TickerWatch • Analyse Event",
+      "file": "workflows/analyse-event.json",
+      "nodes": 25,
+      "operational_nodes": 24
+    },
+    {
+      "id": "twErrorHandler",
+      "name": "TickerWatch • Error Handler",
+      "file": "workflows/error-handler.json",
+      "nodes": 8,
+      "operational_nodes": 7
+    },
+    {
+      "id": "twFetchSources",
+      "name": "TickerWatch • Fetch Sources",
+      "file": "workflows/fetch-sources.json",
+      "nodes": 8,
+      "operational_nodes": 7
+    },
+    {
+      "id": "twMarketObservations",
+      "name": "TickerWatch • Market Observations",
+      "file": "workflows/market-observations.json",
+      "nodes": 12,
+      "operational_nodes": 12
+    },
+    {
+      "id": "twCalendarDiscovery",
+      "name": "TickerWatch • Calendar Discovery",
+      "file": "workflows/calendar-discovery.json",
+      "nodes": 10,
+      "operational_nodes": 10
+    },
+    {
+      "id": "twAlphaVantage",
+      "name": "TickerWatch • Alpha Vantage",
+      "file": "workflows/alpha-vantage.json",
+      "nodes": 8,
+      "operational_nodes": 8
+    },
+    {
+      "id": "twSetupDatabase",
+      "name": "TickerWatch • Setup Database",
+      "file": "workflows/setup-database.json",
+      "nodes": 7,
+      "operational_nodes": 6
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TickerWatch — Alpha Vantage and portfolio update</title><style>body{max-width:1000px;margin:35px auto;padding:0 24px;font:16px/1.65 system-ui,sans-serif;color:#182a3a}h1,h2{line-height:1.25}h1{color:#124c73}h2{margin-top:36px}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ccd9e3}th,.note{background:#eef5fa}code{background:#edf2f6;padding:2px 4px;overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#102e46;color:white;padding:20px;font:13px/1.7 Consolas,monospace}.note{padding:18px;border-left:4px solid #1979a9}a{color:#175d8d}@media print{body{margin:0;font-size:10pt}h2{break-after:avoid}tr{break-inside:avoid}pre{color:black;background:#eef5fa}}</style></head><body>
+<p>Published update · 22 October 2026 · Addendum to the <a href="TickerWatch_Architecture_and_Node_Guide.html">architecture and node guide</a></p>
+<h1>Alpha Vantage research context and the portfolio market snapshot</h1>
+<p>The published system now has <strong>ten workflows and 142 operational nodes</strong>. One Alpha Vantage helper was added. The main workflow and existing Market Observations helper changed; the other seven pre-existing helpers were preserved. BBC/Google News, public article discovery, primary issuer earnings evidence and the 07:00 Europe/Paris schedule remain in place.</p>
+<div class="note"><strong>Actual free-key access:</strong> calendar, estimates and historical earnings passed live checks. News sentiment is implemented but the provider returned <code>premium_required</code>. The bot reports that limitation and pauses further sentiment requests for seven days. No paid subscription was started.</div>
+<h2>How the main workflow changed</h2>
+<pre>Save calendar observations
+  → Refresh Alpha Vantage research [new Execute Sub-workflow]
+  → Save Alpha Vantage research [new Store call]
+  → Dispatch command → existing command/collection branches</pre>
+<p>The provider helper passes through ordinary requests using cached data. Collection, company earnings/stock, catalyst and new research commands can plan eligible refreshes. Provider records are stored in separate Meta entries: they never overwrite issuer-checked Earnings facts.</p>
+<p>The existing formatter gained <code>/expectations</code>, <code>/results</code>, <code>/sentiment</code> and <code>/alphastatus</code>. Earnings and stock views include provider expectations, while daily briefs gain a small provider research-context section. Calendar rendering includes source-labelled Alpha dates, with issuer evidence preferred for matching dates and disagreements kept visible. Available provider news enters the existing queue and matching/analysis process rather than being treated as accepted research automatically.</p>
+<h2>New Alpha Vantage helper: eight nodes</h2>
+<table><tr><th>Node</th><th>What happens and why</th></tr>
+<tr><td>Input</td><td>Accepts the parent's configuration, requested action, universe and loaded state.</td></tr>
+<tr><td>Plan and reserve Alpha requests</td><td>Checks action, target listing, cache age, endpoint cooldown and remaining allowance. Plans one shared calendar/news request or listing-specific estimates/history requests. Creates a durable reservation before external work.</td></tr>
+<tr><td>Persist Alpha reservations</td><td>Calls Store so allowances and intended state changes are recorded before HTTP requests. No pending changes means no Sheets write.</td></tr>
+<tr><td>Alpha requests planned?</td><td>Routes eligible work to retrieval; an empty plan follows the cached path.</td></tr>
+<tr><td>Prepare Alpha requests</td><td>Emits one item per planned request, carrying endpoint kind and verified symbol where applicable.</td></tr>
+<tr><td>Read Alpha Vantage</td><td>Uses Query Auth with parameter name <code>apikey</code>. Sequential requests are spaced 13 seconds apart, with a 20-second request timeout. The key remains in n8n Credentials. The current batch is bounded; a denial discovered during a batch prevents later planned refreshes after responses are processed, not every remaining HTTP call in that already-started batch.</td></tr>
+<tr><td>Validate Alpha responses</td><td>Parses CSV/JSON, checks symbols, dates and expected schemas, preserves unknown numeric fields as null, and detects provider notices even with HTTP 200. Keeps last good data stale after a failed refresh. Parent Store calls persist the validated results.</td></tr>
+<tr><td>Use cached Alpha research</td><td>Returns saved context without new provider calls when refresh is unnecessary or unavailable.</td></tr></table>
+<h2>Cache and budget policy</h2>
+<p>Calendar and estimates cache for 24 hours, historical earnings for seven days, and available news for six hours. The workflow reserves at most <strong>24 requests per UTC day</strong>, conservatively below the standard 25-request allowance. Calls made elsewhere with the same key remain outside this ledger. Failed reservations are not automatically refunded. Successful estimates keep the previous snapshot and up to three earlier snapshots; this is a bounded record, not unlimited estimate history.</p>
+<p>The provider's native EPS/estimate listing mappings were verified for AAPL, MSFT and NVDA. Other watchlist listings explicitly report the mapping gap. Selected ADR symbols can supply an issuer-level calendar date, labelled as such, but their EPS and currencies are not substituted for the team's native European/Asian listing.</p>
+<p>Estimates show fiscal period, EPS/revenue values, analyst count and available revision fields. An observed snapshot change is dated. Historical results show provider actual/estimated EPS and provider surprise metrics. Missing currency or accounting-basis information stays explicit; no automatic GAAP-versus-adjusted comparison is made.</p>
+<h2>Portfolio market snapshot: six added nodes inside Market Observations</h2>
+<pre>Existing reference-outcome path OR existing saved-observations path
+  → Plan portfolio market snapshot
+  → Snapshot refresh needed?
+    yes → Prepare snapshot symbols → Read Yahoo market snapshot
+        → Record portfolio market snapshot
+    no  → Use cached market snapshot
+  → parent Store write → /portfolio rendering</pre>
+<table><tr><th>Node</th><th>Role</th></tr>
+<tr><td>Plan portfolio market snapshot</td><td>On collection or /portfolio, checks a separate 15-minute cache for SPY, BZ=F and ^TNX.</td></tr>
+<tr><td>Snapshot refresh needed?</td><td>Chooses fresh retrieval or a cache-only return.</td></tr>
+<tr><td>Prepare snapshot symbols</td><td>Emits one item per instrument needing a refresh.</td></tr>
+<tr><td>Read Yahoo market snapshot</td><td>Requests the current/latest one-day intraday chart and metadata, including explicit previousClose, through direct Yahoo HTTP.</td></tr>
+<tr><td>Record portfolio market snapshot</td><td>Checks symbol, currency, timestamp and quote validity; computes price moves or yield basis points. Persists intended Meta writes. Failed requests preserve old values as stale.</td></tr>
+<tr><td>Use cached market snapshot</td><td>Returns existing context without refetching instruments whose cache is still fresh.</td></tr></table>
+<p><strong>SPY:</strong> USD price and percentage change from the previous session close; price move excludes dividends. <strong>Brent:</strong> front-month futures price in USD/barrel and percentage change; it is not spot oil. <strong>10-year Treasury:</strong> quoted yield in percent and change in basis points, calculated as (current yield − prior yield) × 100. It is not a T-bill or a bond-price return.</p>
+<p>Yahoo's explicit previous-close field is preferred, avoiding a multi-day change when a daily history bar is absent. Every row shows its quote time and current/latest available session; quotes may be delayed. This market backdrop is separate from the conservative completed-session reference-outcome tracker and does not calculate portfolio P&amp;L.</p>
+<h2>Commands to use</h2>
+<ul><li><code>/portfolio</code> — existing allocation dashboard followed by the market snapshot.</li><li><code>/expectations NVDA NASDAQ</code> — fiscal-period estimates and available revision context.</li><li><code>/results NVDA NASDAQ</code> — recent provider-reported EPS versus estimates.</li><li><code>/catalysts</code> — the combined source-labelled event board.</li><li><code>/sentiment NVDA NASDAQ</code> — provider article tone when entitled; currently explains premium-required access.</li><li><code>/alphastatus</code> — cached source coverage, mapping gaps and daily reserved requests.</li></ul>
+<h2>Verification and limits</h2>
+<p>There were <strong>111 passing local checks</strong>: 26 Alpha Vantage, 12 market snapshot, 23 portfolio, 23 briefing and 27 thesis checks. Native execution 613 succeeded after restart, re-read the saved provider records and obtained fresh Yahoo snapshots. It confirmed five provider calendar observations plus estimates and historical records for the three verified US listings. The check sent no Telegram messages and made no LLM calls.</p>
+<p>The final published main/helper Code nodes were compared with prepared UTF-8 source, the original seven other helpers were checked unchanged, and the Paris schedule was preserved. Live data remains dependent on provider availability and coverage. The news parser was tested with fixtures, but live sentiment data could not be validated on the free key.</p>
+<p class="note">Presentation line: “We added expectations and reported-result context around the existing evidence workflow, and a compact market backdrop beside our allocation. We keep provider estimates, issuer evidence and human judgments visibly separate.”</p>
+</body></html>

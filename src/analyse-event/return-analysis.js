@@ -1,0 +1,1 @@
+const c=$input.first().json;return [{json:{event_id:c.event.event_id,article_evidence:c.event.article_evidence||null,article_fetch_status:c.article_fetch_status||null,analysis:c.valid?c.analysis:null,status:c.valid?'analysed':'review',earnings:c.earnings||null,candidates:c.candidates,validation_errors:c.validation_errors||[]}}];

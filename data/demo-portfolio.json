@@ -1,0 +1,33 @@
+{
+  "kind": "team_portfolio",
+  "mode": "demo",
+  "revision": 1,
+  "updated_at": "2026-10-22T00:00:00Z",
+  "positions": {
+    "NVDA:NASDAQ": {
+      "weight_bps": 2500,
+      "sector": "Semiconductors"
+    },
+    "AAPL:NASDAQ": {
+      "weight_bps": 1500,
+      "sector": "Technology"
+    },
+    "ASML:AMS": {
+      "weight_bps": 1500,
+      "sector": "Semiconductors"
+    },
+    "SHEL:LSE": {
+      "weight_bps": 1500,
+      "sector": "Energy"
+    },
+    "MC:PAR": {
+      "weight_bps": 1000,
+      "sector": "Luxury goods"
+    },
+    "NESN:SIX": {
+      "weight_bps": 1000,
+      "sector": "Consumer staples"
+    }
+  },
+  "cash_bps": 1000
+}

@@ -1,0 +1,180 @@
+{
+  "id": "twSetupDatabase",
+  "name": "TickerWatch • Setup Database",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "abc7818c-4751-55d8-a243-6f079181087e",
+      "name": "Run setup once",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const tables=['Universe','Events','ImpactLinks','Earnings','Runs','Briefings','Meta'];return [{json:{workbook:{properties:{title:'TickerWatch — Project owner',locale:'en_US',timeZone:'Europe/Paris'},sheets:tables.map((title,i)=>({properties:{sheetId:i,title,gridProperties:{rowCount:10000,columnCount:title==='Universe'?13:2,frozenRowCount:1}}}))}}}];\n"
+      },
+      "id": "fe601cc1-09b1-5a6a-a7b0-db0ceba5e8b6",
+      "name": "Define workbook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.workbook }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "deddef74-4ea8-5b83-98d2-f9e0f42aaa68",
+      "name": "Create workbook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const id=$input.first().json.spreadsheetId;if(!id)throw Error('Workbook was not created');\nconst h=['stock_id','issuer_id','ticker','exchange','yahoo_symbol','company','aliases','listing_country','currency','exposure_tags','exposure_evidence_url','reviewed_on','ir_domains'];\nconst samples=[\n ['AAPL:NASDAQ','apple','AAPL','NASDAQ','AAPL','Apple Inc','Apple','US','USD','','','','apple.com'],\n ['MSFT:NASDAQ','microsoft','MSFT','NASDAQ','MSFT','Microsoft Corporation','Microsoft','US','USD','','','','microsoft.com'],\n ['NVDA:NASDAQ','nvidia','NVDA','NASDAQ','NVDA','NVIDIA Corporation','Nvidia','US','USD','','','','nvidia.com'],\n ['ASML:AMS','asml','ASML','AMS','ASML.AS','ASML Holding','ASML','NL','EUR','','','','asml.com'],\n ['SAP:XETRA','sap','SAP','XETRA','SAP.DE','SAP SE','SAP SE','DE','EUR','','','','sap.com'],\n ['MC:PAR','lvmh','MC','PAR','MC.PA','LVMH','Louis Vuitton Moet Hennessy','FR','EUR','','','','lvmh.com'],\n ['SHEL:LSE','shell','SHEL','LSE','SHEL.L','Shell plc','Shell','GB','GBP','','','','shell.com'],\n ['7203:TSE','toyota','7203','TSE','7203.T','Toyota Motor','Toyota','JP','JPY','','','','global.toyota'],\n ['0700:HKEX','tencent','0700','HKEX','0700.HK','Tencent Holdings','Tencent','HK','HKD','','','','tencent.com'],\n ['NESN:SIX','nestle','NESN','SIX','NESN.SW','Nestle SA','Nestle|Nestlé','CH','CHF','','','','nestle.com']\n];\nreturn [{json:{spreadsheet_id:id,body:{valueInputOption:'RAW',data:[{range:'Universe!A1:M11',values:[h,...samples]},...['Events','ImpactLinks','Earnings','Runs','Briefings','Meta'].map(t=>({range:t+'!A1:B1',values:[['key','json']]}))]}}}];\n"
+      },
+      "id": "bc9a3f3b-97f1-5409-8265-32379c315d9d",
+      "name": "Prepare starter rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.spreadsheet_id + '/values:batchUpdate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "01ca049b-1fed-5017-86cb-ba5c76131b00",
+      "name": "Write starter rows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const s=$('Prepare starter rows').first().json;return [{json:{spreadsheet_id:s.spreadsheet_id,url:'https://docs.google.com/spreadsheets/d/'+s.spreadsheet_id,instructions:'Copy spreadsheet_id to Main Settings. These are ten starter listings, not a verified 150-stock universe. Add aliases and reviewed exposure evidence. Run setup only once.'}}];\n"
+      },
+      "id": "781c731e-cb20-5e57-a1bb-ace33a5e80c2",
+      "name": "Setup result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## RUN ONCE\nCreates a NEW workbook and ten editable starter listings, not your actual portfolio. Copy the resulting spreadsheet ID into Main → Settings. Add your stock universe and reviewed exposure evidence before claiming 150-stock coverage.",
+        "height": 240,
+        "width": 680
+      },
+      "id": "8a64e600-caa6-5645-84b8-2842e63c4a21",
+      "name": "Read me 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Run setup once": {
+      "main": [
+        [
+          {
+            "node": "Define workbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define workbook": {
+      "main": [
+        [
+          {
+            "node": "Create workbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create workbook": {
+      "main": [
+        [
+          {
+            "node": "Prepare starter rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare starter rows": {
+      "main": [
+        [
+          {
+            "node": "Write starter rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write starter rows": {
+      "main": [
+        [
+          {
+            "node": "Setup result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

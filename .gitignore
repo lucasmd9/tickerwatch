@@ -1,0 +1,15 @@
+# Local credentials and runtime data
+.env
+.env.*
+!.env.example
+**/credentials*.json
+**/*execution*.json
+**/database.sqlite*
+node_modules/
+__pycache__/
+*.pyc
+runtime/
+private/
+tmp/
+*.log
+.DS_Store

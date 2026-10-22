@@ -1,0 +1,1 @@
+const c=$input.first().json;delete c.av_plans;c.operation='write';return [{json:c}];

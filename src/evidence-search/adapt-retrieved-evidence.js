@@ -1,0 +1,1 @@
+const c=$('Select approved release').first().json;const r=$input.first().json;return [{json:{results:r.raw_content?[{url:c.page_url,title:c.page_title,raw_content:r.raw_content}]:[],error:r.error||(!r.raw_content?'No approved primary text retrieved':null),retrieval_note:'Tavily returned no usable primary text. Local SearXNG search and direct issuer-page retrieval used.'}}];

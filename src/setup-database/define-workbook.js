@@ -1,0 +1,1 @@
+const tables=['Universe','Events','ImpactLinks','Earnings','Runs','Briefings','Meta'];return [{json:{workbook:{properties:{title:'TickerWatch — Project owner',locale:'en_US',timeZone:'Europe/Paris'},sheets:tables.map((title,i)=>({properties:{sheetId:i,title,gridProperties:{rowCount:10000,columnCount:title==='Universe'?13:2,frozenRowCount:1}}}))}}}];

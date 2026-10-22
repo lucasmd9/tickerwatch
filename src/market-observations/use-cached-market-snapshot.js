@@ -1,0 +1,1 @@
+const c=$input.first().json;delete c.backdrop_plans;return [{json:c}];

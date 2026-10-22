@@ -1,0 +1,1 @@
+const c=$input.first().json;delete c.calendar_plans;c.operation='write';c.dirty=[];return [{json:c}];

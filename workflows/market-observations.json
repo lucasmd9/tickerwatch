@@ -1,0 +1,413 @@
+{
+  "id": "twMarketObservations",
+  "name": "TickerWatch • Market Observations",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "a476525a-c097-58d4-8d0e-3440616a1dae",
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -176,
+        192
+      ]
+    },
+    {
+      "id": "a12adde8-c76f-56e4-aea9-25cb43464766",
+      "name": "Refresh needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d4449b05-140d-4ca7-8730-7fc8527b4e53",
+              "leftValue": "={{ ['collect','outcomes'].includes($json.action) && (! $json.state.Meta.market_refresh?.checked_at || Date.now()-Date.parse($json.state.Meta.market_refresh.checked_at)>=21600000) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "6c7e9599-192f-55c9-885e-ff836aa04ff2",
+      "name": "Plan Yahoo requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const RM_BENCHMARKS={NASDAQ:['SPY','USD'],NYSE:['SPY','USD'],AMS:['^STOXX50E','EUR'],XETRA:['^STOXX50E','EUR'],PAR:['^STOXX50E','EUR'],LSE:['^FTSE','GBP'],TSE:['^N225','JPY'],HKEX:['^HSI','HKD'],SIX:['^SSMI','CHF']};\nfunction rmCurrency(x){return x==='GBp'||x==='GBX'?'GBP':x;}\nfunction rmDay(time,zone){return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(time*1000));}\nfunction rmParse(body,symbol,now=Date.now()){\n const r=body?.chart?.result?.[0],m=r?.meta;\n if(!m||body.chart.error||String(m.symbol).toUpperCase()!==symbol.toUpperCase()||!m.currency||!m.exchangeTimezoneName)throw Error('Missing or mismatched Yahoo symbol metadata');\n const today=rmDay(now/1000,m.exchangeTimezoneName),q=r.indicators?.quote?.[0]?.close,a=r.indicators?.adjclose?.[0]?.adjclose;\n if(!Array.isArray(a)||!Array.isArray(q))throw Error('Adjusted closing prices unavailable');\n const points=[];for(let i=0;i<(r.timestamp||[]).length;i++){const date=rmDay(r.timestamp[i],m.exchangeTimezoneName);if(date>=today||!Number.isFinite(a[i])||a[i]<=0||!Number.isFinite(q[i])||q[i]<=0)continue;points.push({date,close:q[i],adjclose:a[i]});}\n const unique=[...new Map(points.map(p=>[p.date,p])).values()].sort((a,b)=>a.date.localeCompare(b.date)).slice(-270);\n if(!unique.length||now-Date.parse(unique.at(-1).date)>6*86400000)throw Error('No recent completed daily price session');\n return {symbol,currency:rmCurrency(m.currency),quote_currency:m.currency,exchange_timezone:m.exchangeTimezoneName,fetched_at:new Date(now).toISOString(),points:unique,source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(symbol)+'/history/'};\n}\nfunction rmApply(c,responses,plans,now=Date.now()){\n const failures=[],saved={},checked_at=new Date(now).toISOString();c.state.Meta=c.state.Meta||{};c.dirty=c.dirty||[];\n const write=(key,value)=>{c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});};\n for(let i=0;i<plans.length;i++){const symbol=plans[i].symbol;try{const result=rmParse(responses[i]?.body||responses[i],symbol,now);saved[symbol]=result;write('market_series_'+symbol,result);}catch(e){failures.push({symbol,reason:String(e.message).slice(0,160)});}}\n const compute=(stock,key,scope,extra={})=>{\n  const mapping=RM_BENCHMARKS[stock.exchange],series=saved[stock.yahoo_symbol],bench=mapping&&saved[mapping[0]],old=c.state.Meta[key];\n  const fail=reason=>{if(old)write(key,{...old,stale:true,refresh_error:reason,last_refresh_attempt:checked_at});return reason;};\n  if(!mapping||!series||!bench)return fail('Stock or benchmark missing from this refresh');\n  if(series.currency!==mapping[1]||bench.currency!==mapping[1])return fail('Stock/benchmark currency mismatch');\n  const benchmark=new Map(bench.points.map(p=>[p.date,p]));const common=series.points.filter(p=>benchmark.has(p.date));\n  if(!common.length)return fail('No common completed session');const last=common.at(-1),base=old?common.find(p=>p.date===old.baseline.date):last;\n  if(!base)return fail('Reference date unavailable in the one-year Yahoo history; no return inferred');\n  if(old&&old.benchmark_symbol!==mapping[0])return fail('Benchmark changed; reference needs review');\n  const bp=benchmark.get(base.date),lp=benchmark.get(last.date),sr=last.adjclose/base.adjclose-1,br=lp.adjclose/bp.adjclose-1;\n  const value={kind:'research_outcome',scope,stock_id:stock.stock_id,symbol:stock.yahoo_symbol,benchmark_symbol:mapping[0],currency:series.currency,started_at:old?.started_at||checked_at,baseline:{date:base.date,stock_adjusted_close:base.adjclose,benchmark_adjusted_close:bp.adjclose},reference_observed:old?.reference_observed||{at:checked_at,date:base.date,stock_close:base.close,stock_quote_currency:series.quote_currency,benchmark_close:bp.close},latest:{date:last.date,stock_adjusted_close:last.adjclose,benchmark_adjusted_close:lp.adjclose},stock_return:sr,benchmark_return:br,excess_return:sr-br,fetched_at:checked_at,stale:false,method:'Yahoo adjusted-close ratios, common completed local dates, local-currency benchmark; not a trade',...extra};write(key,value);\n };\n const outcome_gaps=[];for(const stock of c.universe.slice(0,10)){const error=compute(stock,'research_outcome_'+stock.stock_id,'watchlist');if(error)outcome_gaps.push({stock_id:stock.stock_id,reason:error});}\n for(const t of Object.values(c.state.Meta).filter(t=>t.kind==='team_thesis'&&t.status==='active')){const stock=c.universe.find(s=>s.stock_id===t.stock_id);if(!stock)continue;let h=2166136261;for(const ch of t.created_at)h=Math.imul(h^ch.charCodeAt(0),16777619);compute(stock,'thesis_outcome_'+t.stock_id+'_'+(h>>>0).toString(16),'thesis',{thesis_created_at:t.created_at,hypothesis:t.hypothesis});}\n write('market_refresh',{checked_at,failures,outcome_gaps,symbols_requested:plans.length,symbols_received:Object.keys(saved).length});c.operation='write';return c;\n}\n\nconst c=$input.first().json;const symbols=[...new Set(c.universe.slice(0,10).flatMap(s=>[s.yahoo_symbol,RM_BENCHMARKS[s.exchange]?.[0]]).filter(s=>s&&/^[A-Za-z0-9.^=-]{1,25}$/.test(s)))];return symbols.map(symbol=>({json:{symbol}}));"
+      }
+    },
+    {
+      "id": "65ce66fd-0161-5ab3-9aad-2419612bbe28",
+      "name": "Fetch Yahoo daily history",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "url": "={{ 'https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent($json.symbol) }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "range",
+              "value": "1y"
+            },
+            {
+              "name": "interval",
+              "value": "1d"
+            },
+            {
+              "name": "events",
+              "value": "div,splits"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 TickerWatch research"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 250
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "684ee2b8-0bfa-573a-8169-d00fb292aded",
+      "name": "Record reference outcomes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const RM_BENCHMARKS={NASDAQ:['SPY','USD'],NYSE:['SPY','USD'],AMS:['^STOXX50E','EUR'],XETRA:['^STOXX50E','EUR'],PAR:['^STOXX50E','EUR'],LSE:['^FTSE','GBP'],TSE:['^N225','JPY'],HKEX:['^HSI','HKD'],SIX:['^SSMI','CHF']};\nfunction rmCurrency(x){return x==='GBp'||x==='GBX'?'GBP':x;}\nfunction rmDay(time,zone){return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(time*1000));}\nfunction rmParse(body,symbol,now=Date.now()){\n const r=body?.chart?.result?.[0],m=r?.meta;\n if(!m||body.chart.error||String(m.symbol).toUpperCase()!==symbol.toUpperCase()||!m.currency||!m.exchangeTimezoneName)throw Error('Missing or mismatched Yahoo symbol metadata');\n const today=rmDay(now/1000,m.exchangeTimezoneName),q=r.indicators?.quote?.[0]?.close,a=r.indicators?.adjclose?.[0]?.adjclose;\n if(!Array.isArray(a)||!Array.isArray(q))throw Error('Adjusted closing prices unavailable');\n const points=[];for(let i=0;i<(r.timestamp||[]).length;i++){const date=rmDay(r.timestamp[i],m.exchangeTimezoneName);if(date>=today||!Number.isFinite(a[i])||a[i]<=0||!Number.isFinite(q[i])||q[i]<=0)continue;points.push({date,close:q[i],adjclose:a[i]});}\n const unique=[...new Map(points.map(p=>[p.date,p])).values()].sort((a,b)=>a.date.localeCompare(b.date)).slice(-270);\n if(!unique.length||now-Date.parse(unique.at(-1).date)>6*86400000)throw Error('No recent completed daily price session');\n return {symbol,currency:rmCurrency(m.currency),quote_currency:m.currency,exchange_timezone:m.exchangeTimezoneName,fetched_at:new Date(now).toISOString(),points:unique,source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(symbol)+'/history/'};\n}\nfunction rmApply(c,responses,plans,now=Date.now()){\n const failures=[],saved={},checked_at=new Date(now).toISOString();c.state.Meta=c.state.Meta||{};c.dirty=c.dirty||[];\n const write=(key,value)=>{c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});};\n for(let i=0;i<plans.length;i++){const symbol=plans[i].symbol;try{const result=rmParse(responses[i]?.body||responses[i],symbol,now);saved[symbol]=result;write('market_series_'+symbol,result);}catch(e){failures.push({symbol,reason:String(e.message).slice(0,160)});}}\n const compute=(stock,key,scope,extra={})=>{\n  const mapping=RM_BENCHMARKS[stock.exchange],series=saved[stock.yahoo_symbol],bench=mapping&&saved[mapping[0]],old=c.state.Meta[key];\n  const fail=reason=>{if(old)write(key,{...old,stale:true,refresh_error:reason,last_refresh_attempt:checked_at});return reason;};\n  if(!mapping||!series||!bench)return fail('Stock or benchmark missing from this refresh');\n  if(series.currency!==mapping[1]||bench.currency!==mapping[1])return fail('Stock/benchmark currency mismatch');\n  const benchmark=new Map(bench.points.map(p=>[p.date,p]));const common=series.points.filter(p=>benchmark.has(p.date));\n  if(!common.length)return fail('No common completed session');const last=common.at(-1),base=old?common.find(p=>p.date===old.baseline.date):last;\n  if(!base)return fail('Reference date unavailable in the one-year Yahoo history; no return inferred');\n  if(old&&old.benchmark_symbol!==mapping[0])return fail('Benchmark changed; reference needs review');\n  const bp=benchmark.get(base.date),lp=benchmark.get(last.date),sr=last.adjclose/base.adjclose-1,br=lp.adjclose/bp.adjclose-1;\n  const value={kind:'research_outcome',scope,stock_id:stock.stock_id,symbol:stock.yahoo_symbol,benchmark_symbol:mapping[0],currency:series.currency,started_at:old?.started_at||checked_at,baseline:{date:base.date,stock_adjusted_close:base.adjclose,benchmark_adjusted_close:bp.adjclose},reference_observed:old?.reference_observed||{at:checked_at,date:base.date,stock_close:base.close,stock_quote_currency:series.quote_currency,benchmark_close:bp.close},latest:{date:last.date,stock_adjusted_close:last.adjclose,benchmark_adjusted_close:lp.adjclose},stock_return:sr,benchmark_return:br,excess_return:sr-br,fetched_at:checked_at,stale:false,method:'Yahoo adjusted-close ratios, common completed local dates, local-currency benchmark; not a trade',...extra};write(key,value);\n };\n const outcome_gaps=[];for(const stock of c.universe.slice(0,10)){const error=compute(stock,'research_outcome_'+stock.stock_id,'watchlist');if(error)outcome_gaps.push({stock_id:stock.stock_id,reason:error});}\n for(const t of Object.values(c.state.Meta).filter(t=>t.kind==='team_thesis'&&t.status==='active')){const stock=c.universe.find(s=>s.stock_id===t.stock_id);if(!stock)continue;let h=2166136261;for(const ch of t.created_at)h=Math.imul(h^ch.charCodeAt(0),16777619);compute(stock,'thesis_outcome_'+t.stock_id+'_'+(h>>>0).toString(16),'thesis',{thesis_created_at:t.created_at,hypothesis:t.hypothesis});}\n write('market_refresh',{checked_at,failures,outcome_gaps,symbols_requested:plans.length,symbols_received:Object.keys(saved).length});c.operation='write';return c;\n}\n\nconst c=$('Input').first().json;const plans=$('Plan Yahoo requests').all().map(i=>i.json);const responses=$input.all().map(i=>i.json);return [{json:rmApply(c,responses,plans)}];"
+      }
+    },
+    {
+      "id": "5045d69f-782c-5797-a7b2-45fc88c28703",
+      "name": "Use saved market observations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const c=$input.first().json;c.operation='write';c.dirty=[];return [{json:c}];"
+      }
+    },
+    {
+      "id": "202f1fca-d3ca-5984-8c36-17a77ae86a7e",
+      "name": "Plan portfolio market snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Yahoo market context for the allocation dashboard; separate from reference returns.\nconst MB_SYMBOLS=[{key:'spy',symbol:'SPY',label:'SPY',unit:'USD',kind:'price'},{key:'brent',symbol:'BZ=F',label:'Brent front-month futures',unit:'USD/barrel',kind:'price'},{key:'treasury10y',symbol:'^TNX',label:'US 10-year Treasury yield',unit:'%',kind:'yield'}];\nfunction mbDay(seconds,zone){return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(seconds*1000));}\nfunction mbPlans(c,now=Date.now()){if(!['collect','portfolio'].includes(c.action))return [];return MB_SYMBOLS.filter(p=>{const r=c.state.Meta['market_backdrop_'+p.key];return !r?.last_attempt_at||now-Date.parse(r.last_attempt_at)>=15*60000;});}\nfunction mbParse(response,plan,now=Date.now()){\n if(response.error||response.statusCode>=400)throw Error('Yahoo quote unavailable');let data=response.body??response.data??response.response??response;if(typeof data==='string')data=JSON.parse(data);if(data.chart?.error)throw Error('Yahoo chart error');const r=data.chart?.result?.[0],meta=r?.meta;if(!meta||meta.symbol!==plan.symbol||!meta.exchangeTimezoneName)throw Error('Yahoo quote identity/timezone missing');\n if(plan.kind==='price'&&meta.currency!=='USD')throw Error('Unexpected quote currency');\n const price=meta.regularMarketPrice,previous=meta.previousClose,time=meta.regularMarketTime;\n if(Number.isFinite(price)&&price>0&&Number.isFinite(previous)&&previous>0&&Number.isFinite(time)&&time*1000<=now+300000&&now-time*1000<=6*86400000){if(plan.kind==='yield'&&price>30)throw Error('Unexpected Treasury yield units');const session=mbDay(time,meta.exchangeTimezoneName),delta=price-previous;return {...plan,value:price,previous_close:previous,change:delta,change_percent:plan.kind==='price'?delta/previous*100:null,change_bps:plan.kind==='yield'?delta*100:null,session,previous_session:'previous session',comparison_basis:'Yahoo explicit previousClose',exchange_timezone:meta.exchangeTimezoneName,quote_time:new Date(time*1000).toISOString(),session_state:session===mbDay(now/1000,meta.exchangeTimezoneName)?'current-session snapshot; may be delayed':'latest available session',checked_at:new Date(now).toISOString(),last_attempt_at:new Date(now).toISOString(),status:'ok',source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(plan.symbol)+'/'};}\n const closes=r.indicators?.quote?.[0]?.close,points=(r.timestamp||[]).map((t,i)=>({time:t,value:closes?.[i]})).filter(p=>Number.isFinite(p.value)&&p.value>0&&p.time*1000<=now+300000).sort((a,b)=>a.time-b.time);\n if(points.length<2)throw Error('No paired daily quote bars');const current=points.at(-1),prior=points.at(-2),session=mbDay(current.time,meta.exchangeTimezoneName),previous_session=mbDay(prior.time,meta.exchangeTimezoneName);\n if(session===previous_session)throw Error('Daily quote sessions not distinct');if(now-current.time*1000>6*86400000)throw Error('Yahoo quote stale');if(plan.kind==='yield'&&current.value>30)throw Error('Unexpected Treasury yield units');\n const delta=current.value-prior.value;return {...plan,value:current.value,previous_close:prior.value,change:delta,change_percent:plan.kind==='price'?delta/prior.value*100:null,change_bps:plan.kind==='yield'?delta*100:null,session,previous_session,exchange_timezone:meta.exchangeTimezoneName,quote_time:meta.regularMarketTime?new Date(meta.regularMarketTime*1000).toISOString():new Date(current.time*1000).toISOString(),session_state:session===mbDay(now/1000,meta.exchangeTimezoneName)?'current-session snapshot; may be delayed':'latest available session',checked_at:new Date(now).toISOString(),last_attempt_at:new Date(now).toISOString(),status:'ok',source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(plan.symbol)+'/'};\n}\nfunction mbApply(c,responses,plans,now=Date.now()){if(responses.length!==plans.length)throw Error('Market backdrop response count mismatch');for(let i=0;i<plans.length;i++){const plan=plans[i],key='market_backdrop_'+plan.key;let value;try{value={kind:'market_backdrop',...mbParse(responses[i],plan,now),instrument_kind:plan.kind};value.kind='market_backdrop';}catch{value={...(c.state.Meta[key]||plan),kind:'market_backdrop',instrument_kind:plan.kind,status:'unavailable',stale:true,last_attempt_at:new Date(now).toISOString()};}c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});}c.operation='write';return c;}\nfunction mbDashboard(c){const lines=['MARKET SNAPSHOT · YAHOO'],sign=(n,d=2)=>(n>=0?'+':'')+n.toFixed(d);for(const p of MB_SYMBOLS){const r=c.state.Meta?.['market_backdrop_'+p.key];if(!r||!Number.isFinite(r.value)){lines.push(p.label+': unavailable');continue;}const stale=r.status!=='ok'||Date.now()-Date.parse(r.checked_at)>3600000;lines.push(p.label+': '+r.value.toFixed(p.kind==='yield'?3:2)+' '+p.unit+' · '+(p.kind==='yield'?sign(r.change_bps,1)+' bp':sign(r.change_percent)+'%'),'Session '+r.session+' vs '+r.previous_session+' close · '+r.session_state,'Quote '+r.quote_time+(stale?' · STALE / refresh unavailable':''));}lines.push('Brent is a futures contract, not spot oil. Yield changes are basis points, not bond returns. SPY move excludes cash dividends; this is not portfolio P&L.');return lines.join('\\n');}\n\nconst c=$input.first().json;c.backdrop_plans=mbPlans(c);return [{json:c}];"
+      },
+      "position": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "a5af2d6c-ad45-549e-b6ad-5815b8fb79d3",
+      "name": "Snapshot refresh needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.backdrop_plans.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "position": [
+        600,
+        400
+      ]
+    },
+    {
+      "id": "e23e5e18-75a3-5e66-a07c-d86127b2f603",
+      "name": "Prepare snapshot symbols",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "return $input.first().json.backdrop_plans.map(plan=>({json:plan}));"
+      },
+      "position": [
+        800,
+        400
+      ]
+    },
+    {
+      "id": "1a44ece5-b627-5e09-a844-25a83463892f",
+      "name": "Read Yahoo market snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1000,
+        400
+      ],
+      "parameters": {
+        "url": "={{ 'https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent($json.symbol) }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "range",
+              "value": "1d"
+            },
+            {
+              "name": "interval",
+              "value": "1m"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 TickerWatch research"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 250
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5cb46fa1-82ed-5191-92db-464aa2c7877c",
+      "name": "Record portfolio market snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Yahoo market context for the allocation dashboard; separate from reference returns.\nconst MB_SYMBOLS=[{key:'spy',symbol:'SPY',label:'SPY',unit:'USD',kind:'price'},{key:'brent',symbol:'BZ=F',label:'Brent front-month futures',unit:'USD/barrel',kind:'price'},{key:'treasury10y',symbol:'^TNX',label:'US 10-year Treasury yield',unit:'%',kind:'yield'}];\nfunction mbDay(seconds,zone){return new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(seconds*1000));}\nfunction mbPlans(c,now=Date.now()){if(!['collect','portfolio'].includes(c.action))return [];return MB_SYMBOLS.filter(p=>{const r=c.state.Meta['market_backdrop_'+p.key];return !r?.last_attempt_at||now-Date.parse(r.last_attempt_at)>=15*60000;});}\nfunction mbParse(response,plan,now=Date.now()){\n if(response.error||response.statusCode>=400)throw Error('Yahoo quote unavailable');let data=response.body??response.data??response.response??response;if(typeof data==='string')data=JSON.parse(data);if(data.chart?.error)throw Error('Yahoo chart error');const r=data.chart?.result?.[0],meta=r?.meta;if(!meta||meta.symbol!==plan.symbol||!meta.exchangeTimezoneName)throw Error('Yahoo quote identity/timezone missing');\n if(plan.kind==='price'&&meta.currency!=='USD')throw Error('Unexpected quote currency');\n const price=meta.regularMarketPrice,previous=meta.previousClose,time=meta.regularMarketTime;\n if(Number.isFinite(price)&&price>0&&Number.isFinite(previous)&&previous>0&&Number.isFinite(time)&&time*1000<=now+300000&&now-time*1000<=6*86400000){if(plan.kind==='yield'&&price>30)throw Error('Unexpected Treasury yield units');const session=mbDay(time,meta.exchangeTimezoneName),delta=price-previous;return {...plan,value:price,previous_close:previous,change:delta,change_percent:plan.kind==='price'?delta/previous*100:null,change_bps:plan.kind==='yield'?delta*100:null,session,previous_session:'previous session',comparison_basis:'Yahoo explicit previousClose',exchange_timezone:meta.exchangeTimezoneName,quote_time:new Date(time*1000).toISOString(),session_state:session===mbDay(now/1000,meta.exchangeTimezoneName)?'current-session snapshot; may be delayed':'latest available session',checked_at:new Date(now).toISOString(),last_attempt_at:new Date(now).toISOString(),status:'ok',source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(plan.symbol)+'/'};}\n const closes=r.indicators?.quote?.[0]?.close,points=(r.timestamp||[]).map((t,i)=>({time:t,value:closes?.[i]})).filter(p=>Number.isFinite(p.value)&&p.value>0&&p.time*1000<=now+300000).sort((a,b)=>a.time-b.time);\n if(points.length<2)throw Error('No paired daily quote bars');const current=points.at(-1),prior=points.at(-2),session=mbDay(current.time,meta.exchangeTimezoneName),previous_session=mbDay(prior.time,meta.exchangeTimezoneName);\n if(session===previous_session)throw Error('Daily quote sessions not distinct');if(now-current.time*1000>6*86400000)throw Error('Yahoo quote stale');if(plan.kind==='yield'&&current.value>30)throw Error('Unexpected Treasury yield units');\n const delta=current.value-prior.value;return {...plan,value:current.value,previous_close:prior.value,change:delta,change_percent:plan.kind==='price'?delta/prior.value*100:null,change_bps:plan.kind==='yield'?delta*100:null,session,previous_session,exchange_timezone:meta.exchangeTimezoneName,quote_time:meta.regularMarketTime?new Date(meta.regularMarketTime*1000).toISOString():new Date(current.time*1000).toISOString(),session_state:session===mbDay(now/1000,meta.exchangeTimezoneName)?'current-session snapshot; may be delayed':'latest available session',checked_at:new Date(now).toISOString(),last_attempt_at:new Date(now).toISOString(),status:'ok',source_url:'https://finance.yahoo.com/quote/'+encodeURIComponent(plan.symbol)+'/'};\n}\nfunction mbApply(c,responses,plans,now=Date.now()){if(responses.length!==plans.length)throw Error('Market backdrop response count mismatch');for(let i=0;i<plans.length;i++){const plan=plans[i],key='market_backdrop_'+plan.key;let value;try{value={kind:'market_backdrop',...mbParse(responses[i],plan,now),instrument_kind:plan.kind};value.kind='market_backdrop';}catch{value={...(c.state.Meta[key]||plan),kind:'market_backdrop',instrument_kind:plan.kind,status:'unavailable',stale:true,last_attempt_at:new Date(now).toISOString()};}c.state.Meta[key]=value;c.dirty.push({table:'Meta',key,value});}c.operation='write';return c;}\nfunction mbDashboard(c){const lines=['MARKET SNAPSHOT · YAHOO'],sign=(n,d=2)=>(n>=0?'+':'')+n.toFixed(d);for(const p of MB_SYMBOLS){const r=c.state.Meta?.['market_backdrop_'+p.key];if(!r||!Number.isFinite(r.value)){lines.push(p.label+': unavailable');continue;}const stale=r.status!=='ok'||Date.now()-Date.parse(r.checked_at)>3600000;lines.push(p.label+': '+r.value.toFixed(p.kind==='yield'?3:2)+' '+p.unit+' · '+(p.kind==='yield'?sign(r.change_bps,1)+' bp':sign(r.change_percent)+'%'),'Session '+r.session+' vs '+r.previous_session+' close · '+r.session_state,'Quote '+r.quote_time+(stale?' · STALE / refresh unavailable':''));}lines.push('Brent is a futures contract, not spot oil. Yield changes are basis points, not bond returns. SPY move excludes cash dividends; this is not portfolio P&L.');return lines.join('\\n');}\n\nconst c=$('Plan portfolio market snapshot').first().json;mbApply(c,$input.all().map(i=>i.json),c.backdrop_plans);delete c.backdrop_plans;return [{json:c}];"
+      },
+      "position": [
+        1200,
+        400
+      ]
+    },
+    {
+      "id": "a3223b6f-1363-5c99-aaa2-9571ba808feb",
+      "name": "Use cached market snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const c=$input.first().json;delete c.backdrop_plans;return [{json:c}];"
+      },
+      "position": [
+        1400,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Refresh needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh needed?": {
+      "main": [
+        [
+          {
+            "node": "Plan Yahoo requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Use saved market observations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Yahoo requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch Yahoo daily history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Yahoo daily history": {
+      "main": [
+        [
+          {
+            "node": "Record reference outcomes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record reference outcomes": {
+      "main": [
+        [
+          {
+            "node": "Plan portfolio market snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use saved market observations": {
+      "main": [
+        [
+          {
+            "node": "Plan portfolio market snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan portfolio market snapshot": {
+      "main": [
+        [
+          {
+            "node": "Snapshot refresh needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Snapshot refresh needed?": {
+      "main": [
+        [
+          {
+            "node": "Prepare snapshot symbols",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Use cached market snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare snapshot symbols": {
+      "main": [
+        [
+          {
+            "node": "Read Yahoo market snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Yahoo market snapshot": {
+      "main": [
+        [
+          {
+            "node": "Record portfolio market snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Paris",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

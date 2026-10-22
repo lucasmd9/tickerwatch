@@ -1,0 +1,6 @@
+const c=$('Input').first().json,r=$input.first().json;
+const allowed=['bbc.com','bbc.co.uk','reuters.com','apnews.com','cnbc.com','bloomberg.com','finance.yahoo.com','investing.com','benzinga.com','businesswire.com','globenewswire.com','prnewswire.com','theglobeandmail.com','thestar.com.my','theedgemalaysia.com','bankofcanada.ca','ecb.europa.eu','federalreserve.gov',...(String(c.stock?.ir_domains||'').split('|'))].filter(Boolean);
+const host=u=>String(u).match(/^https:\/\/([^/:?#]+)/i)?.[1]?.toLowerCase()||'';
+const tokens=s=>new Set(String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>3&&!['with','from','that','this','stock','news','company','financial'].includes(w)));
+const title=tokens(c.event.title);const candidates=(r.results||[]).filter(p=>allowed.some(d=>host(p.url)===d||host(p.url).endsWith('.'+d))).map(p=>({...p,overlap:[...tokens(p.title)].filter(w=>title.has(w)).length/Math.max(1,Math.min(12,title.size))})).filter(p=>p.overlap>=0.45).sort((a,b)=>b.overlap-a.overlap);
+return [{json:{...c,article_url:candidates[0]?.url||'',article_title:candidates[0]?.title||'',article_fetch_status:r.error?'search_failed':candidates.length?'located':'no_matching_public_source'}}];

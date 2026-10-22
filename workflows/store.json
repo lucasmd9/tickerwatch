@@ -1,0 +1,274 @@
+{
+  "id": "twStore",
+  "name": "TickerWatch • Store",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c40e711d-49f3-5daa-b3dc-49ee354c3c06",
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f89387bf-574f-471c-8308-4b5a19ba4a1d",
+              "leftValue": "={{ $json.operation === 'read' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "25fa0c0e-100e-54be-9571-06925b7953c9",
+      "name": "Read?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.cfg.spreadsheet_id + '/values:batchGet?' + \"ranges=Universe%21A%3AM&ranges=Events%21A%3AB&ranges=ImpactLinks%21A%3AB&ranges=Earnings%21A%3AB&ranges=Runs%21A%3AB&ranges=Briefings%21A%3AB&ranges=Meta%21A%3AB\" }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "f7fb8a8b-57b7-59b5-935b-807de0ecf3e4",
+      "name": "Read database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const c=JSON.parse(JSON.stringify($('Input').first().json));\nconst r=$input.first().json;\nif(!Array.isArray(r.valueRanges)) throw new Error('Sheets did not return database ranges. Check credential and spreadsheet ID.');\nc.state={};c.rows={};c.nextRows={};c.dirty=[];\nconst names=['Universe','Events','ImpactLinks','Earnings','Runs','Briefings','Meta'];\nfor(let i=0;i<names.length;i++){\n const name=names[i],v=r.valueRanges[i]?.values||[];\n if(!v.length)throw new Error('Missing headers in '+name+'. Run Setup Database once.');\n if(name==='Universe'){\n  const h=v[0];c.universe=v.slice(1).filter(a=>a[0]).map(a=>Object.fromEntries(h.map((k,j)=>[k,String(a[j]??'').trim()])));\n  const ids=new Set();for(const s of c.universe){if(!s.stock_id||!s.issuer_id||!s.ticker||!s.exchange||!s.yahoo_symbol||!s.company)throw new Error('Incomplete Universe row '+s.stock_id);if(ids.has(s.stock_id))throw new Error('Duplicate stock_id '+s.stock_id);ids.add(s.stock_id);}\n }else{\n  c.state[name]={};c.rows[name]={};c.nextRows[name]=v.length+1;\n  for(let j=1;j<v.length;j++){const [k,raw]=v[j];if(!k)continue;try{c.state[name][k]=JSON.parse(raw);}catch{throw new Error('Invalid stored JSON: '+name+' row '+(j+1));}c.rows[name][k]=j+1;}\n }\n}\nreturn [{json:c}];\n"
+      },
+      "id": "18c1cc33-4069-59fe-b4df-ee42b5041147",
+      "name": "Decode database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c=JSON.parse(JSON.stringify($('Input').first().json));const data=[];\nconst unique=new Map();for(const x of c.dirty||[])unique.set(x.table+'|'+x.key,x);\nfor(const x of unique.values()){\n if(!['Events','ImpactLinks','Earnings','Runs','Briefings','Meta'].includes(x.table))throw new Error('Invalid table');\n if(!c.rows?.[x.table]||!c.nextRows?.[x.table])throw new Error('Write needs a loaded database context');\n const persisted=JSON.parse(JSON.stringify(x.value));if(x.table==='Events'&&persisted.candidates)persisted.candidates=persisted.candidates.map(m=>({stock_id:m.stock_id,match_type:m.match_type,matched:m.matched}));const text=JSON.stringify(persisted);if(text.length>45000)throw new Error('Record exceeds safe Sheets cell size: '+x.table+'/'+x.key);\n let row=c.rows[x.table][x.key];if(!row){row=c.nextRows[x.table]++;c.rows[x.table][x.key]=row;}\n if(row>10000)throw new Error('Database tab capacity reached; expand sheet rows and update configured limit.');c.state[x.table][x.key]=x.value;\n data.push({range:`${x.table}!A${row}:B${row}`,values:[[x.key,text]]});\n}\nc.dirty=[];return [{json:{...c,body:{valueInputOption:'RAW',data}}}];\n"
+      },
+      "id": "7807c14d-a930-5d20-8324-82fcaa407aea",
+      "name": "Build updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a9eb8ef7-2808-49a9-8fba-6276871c37bb",
+              "leftValue": "={{ $json.body.data.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2b6f79e6-112b-5383-a9e4-b8a4191fa8ef",
+      "name": "Changes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.cfg.spreadsheet_id + '/values:batchUpdate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "472eb1f5-2d73-57d7-898e-3cc409e26bd6",
+      "name": "Commit updates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        656
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const c=JSON.parse(JSON.stringify($('Build updates').first().json));delete c.body;return [{json:c}];\n"
+      },
+      "id": "c4c58b90-454c-5b08-b090-bbb5a9b7c0a5",
+      "name": "Return saved context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Persistent state\nGoogle Sheets OAuth credential. Universe is editable; other tabs are keyed JSON records. Writes use explicit row ranges, so retries do not append duplicates. SERIAL executions required; no transactional locking is claimed.",
+        "height": 240,
+        "width": 680
+      },
+      "id": "50b882d1-986b-5414-bd09-dbdf7d36b80f",
+      "name": "Read me 8",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Read?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read?": {
+      "main": [
+        [
+          {
+            "node": "Read database",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read database": {
+      "main": [
+        [
+          {
+            "node": "Decode database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build updates": {
+      "main": [
+        [
+          {
+            "node": "Changes?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Changes?": {
+      "main": [
+        [
+          {
+            "node": "Commit updates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return saved context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit updates": {
+      "main": [
+        [
+          {
+            "node": "Return saved context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "active": false
+}

@@ -1,0 +1,1 @@
+return $input.first().json.calendar_plans.filter(p=>p.kind==='issuer').map(plan=>({json:plan}));

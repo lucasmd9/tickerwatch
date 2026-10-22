@@ -1,0 +1,1 @@
+const s=$('Prepare starter rows').first().json;return [{json:{spreadsheet_id:s.spreadsheet_id,url:'https://docs.google.com/spreadsheets/d/'+s.spreadsheet_id,instructions:'Copy spreadsheet_id to Main Settings. These are ten starter listings, not a verified 150-stock universe. Add aliases and reviewed exposure evidence. Run setup only once.'}}];

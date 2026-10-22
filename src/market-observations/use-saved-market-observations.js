@@ -1,0 +1,1 @@
+const c=$input.first().json;c.operation='write';c.dirty=[];return [{json:c}];
